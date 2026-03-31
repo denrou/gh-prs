@@ -2,19 +2,31 @@
 
 TUI for reviewing and merging GitHub pull requests, powered by `gh` CLI and [Textual](https://textual.textualize.io/).
 
+Lists all open pull requests assigned to you or requesting your review across all repositories.
+
+## Prerequisites
+
+- [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated (`gh auth login`)
+- Python 3.14+
+- [uv](https://docs.astral.sh/uv/)
+
 ## Install
 
 ```bash
-uv sync
+uv tool install gh-prs --from git+https://github.com/denrou/gh-prs.git
 ```
 
-## Usage
+### As a `gh` alias
 
 ```bash
-uv run gh-prs
+gh alias set --shell prs 'gh-prs'
 ```
 
-Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated.
+Then simply run:
+
+```bash
+gh prs
+```
 
 ## Keybindings
 
