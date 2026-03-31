@@ -364,10 +364,12 @@ class PullRequestsApp(App[None]):
     @work(thread=True)
     def _do_approve(self, prs: list[PullRequest]) -> None:
         errors = []
+        approved_ids: set[str] = set()
         for i, pr in enumerate(prs, 1):
             self._update_status(f"Approving {pr.id} ({i}/{len(prs)})...")
             try:
                 approve_pr(pr.repo, pr.number)
+                approved_ids.add(pr.id)
                 self._update_status(f"Approved {pr.id}")
             except RuntimeError as e:
                 errors.append(str(e))
@@ -376,6 +378,16 @@ class PullRequestsApp(App[None]):
             self._update_status(f"Errors: {'; '.join(errors)}")
         else:
             self._update_status(f"Approved {len(prs)} PR(s) — refreshing...")
+
+        # Optimistically mark approved PRs so the UI doesn't show stale
+        # review status while waiting for GitHub's API to propagate.
+        def _mark_approved() -> None:
+            for pr in self._prs:
+                if pr.id in approved_ids:
+                    pr.review_decision = "APPROVED"
+            self._apply_filter_and_render()
+
+        self.call_from_thread(_mark_approved)
         self._refresh_after_action()
 
     def action_merge(self) -> None:
