@@ -1,0 +1,21 @@
+[project]
+name = "gh-prs"
+version = "0.1.0"
+description = "TUI for reviewing and merging GitHub pull requests powered by gh CLI"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "textual>=8.2.1",
+]
+
+[project.scripts]
+gh-prs = "gh_prs.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.8",
+]
