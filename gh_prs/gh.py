@@ -56,12 +56,17 @@ class PullRequest:
 
 
 def _run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["gh", *args],
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+    try:
+        return subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "gh CLI not found. Install it from https://cli.github.com/"
+        ) from None
 
 
 def _search_prs(qualifier: str) -> list[PullRequest]:
@@ -82,7 +87,10 @@ def _search_prs(qualifier: str) -> list[PullRequest]:
     raw = result.stdout.strip()
     if not raw:
         return []
-    return [PullRequest.from_json(item) for item in json.loads(raw)]
+    try:
+        return [PullRequest.from_json(item) for item in json.loads(raw)]
+    except (json.JSONDecodeError, KeyError) as e:
+        raise RuntimeError(f"Failed to parse PR data: {e}") from None
 
 
 def fetch_prs() -> list[PullRequest]:
@@ -101,20 +109,27 @@ def fetch_prs() -> list[PullRequest]:
 
 def enrich_pr(pr: PullRequest) -> None:
     """Fetch branch and review details for a single PR (mutates in place)."""
-    detail = _run_gh(
-        "pr",
-        "view",
-        str(pr.number),
-        "--repo",
-        pr.repo,
-        "--json",
-        "headRefName,reviewDecision",
-        check=False,
-    )
-    if detail.returncode == 0 and detail.stdout.strip():
+    try:
+        detail = _run_gh(
+            "pr",
+            "view",
+            str(pr.number),
+            "--repo",
+            pr.repo,
+            "--json",
+            "headRefName,reviewDecision",
+            check=False,
+        )
+    except RuntimeError:
+        return
+    if detail.returncode != 0 or not detail.stdout.strip():
+        return
+    try:
         info = json.loads(detail.stdout)
-        pr.head_ref = info.get("headRefName", "")
-        pr.review_decision = info.get("reviewDecision", "") or ""
+    except json.JSONDecodeError:
+        return
+    pr.head_ref = info.get("headRefName", "")
+    pr.review_decision = info.get("reviewDecision", "") or ""
 
 
 def approve_pr(repo: str, number: int) -> None:

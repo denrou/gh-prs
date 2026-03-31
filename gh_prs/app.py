@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from textual import work
 from textual.app import App, ComposeResult
+from textual.worker import Worker
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -192,6 +194,7 @@ class PullRequestsApp(App[None]):
         self._filtered: list[PullRequest] = []
         self._selected: set[str] = set()
         self._filter_text: str = ""
+        self._enrich_worker: Worker[None] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -208,16 +211,32 @@ class PullRequestsApp(App[None]):
         )
         self._load_prs()
 
+    def _cancel_enrich(self) -> None:
+        if self._enrich_worker and self._enrich_worker.is_running:
+            self._enrich_worker.cancel()
+            self._enrich_worker = None
+
     @work(thread=True)
     def _load_prs(self) -> None:
         self._update_status("Fetching pull requests...")
         try:
-            self._prs = fetch_prs()
+            prs = fetch_prs()
         except RuntimeError as e:
             self._update_status(str(e))
             return
-        self.call_from_thread(self._apply_filter_and_render)
-        self._enrich_prs()
+
+        def _set_and_render() -> None:
+            self._prs = prs
+            self._apply_filter_and_render()
+
+        self.call_from_thread(self._cancel_enrich)
+        self.call_from_thread(_set_and_render)
+        self._start_enrich()
+
+    def _start_enrich(self) -> None:
+        """Launch enrichment, cancelling any previous run."""
+        self.call_from_thread(self._cancel_enrich)
+        self._enrich_worker = self._enrich_prs()
 
     @work(thread=True)
     def _enrich_prs(self) -> None:
@@ -228,7 +247,10 @@ class PullRequestsApp(App[None]):
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {pool.submit(enrich_pr, pr): pr for pr in prs}
             for future in as_completed(futures):
-                future.result()
+                try:
+                    future.result()
+                except Exception:
+                    pass
                 done += 1
                 self._update_status(f"Loading details... {done}/{total}")
                 self.call_from_thread(self._apply_filter_and_render)
@@ -240,8 +262,6 @@ class PullRequestsApp(App[None]):
         self.call_from_thread(_set)
 
     def _apply_filter_and_render(self) -> None:
-        import re
-
         if self._filter_text:
             try:
                 pat = re.compile(self._filter_text, re.IGNORECASE)
@@ -347,14 +367,7 @@ class PullRequestsApp(App[None]):
             self._update_status(f"Errors: {'; '.join(errors)}")
         else:
             self._update_status(f"Approved {len(prs)} PR(s) — refreshing...")
-        # Always refresh to update review status
-        self._selected.clear()
-        try:
-            self._prs = fetch_prs()
-        except RuntimeError:
-            pass
-        self.call_from_thread(self._apply_filter_and_render)
-        self._enrich_prs()
+        self._refresh_after_action()
 
     def action_merge(self) -> None:
         targets = self._get_target_prs()
@@ -384,14 +397,23 @@ class PullRequestsApp(App[None]):
             self._update_status(f"Errors: {'; '.join(errors)}")
         else:
             self._update_status(f"Merged {len(prs)} PR(s) — refreshing...")
-        # Always refresh to remove merged PRs
-        self._selected.clear()
+        self._refresh_after_action()
+
+    def _refresh_after_action(self) -> None:
+        """Re-fetch PRs after approve/merge, thread-safe."""
         try:
-            self._prs = fetch_prs()
-        except RuntimeError:
-            pass
-        self.call_from_thread(self._apply_filter_and_render)
-        self._enrich_prs()
+            new_prs = fetch_prs()
+        except RuntimeError as e:
+            self._update_status(f"Refresh failed: {e}")
+            return
+
+        def _update() -> None:
+            self._selected.clear()
+            self._prs = new_prs
+            self._apply_filter_and_render()
+
+        self.call_from_thread(_update)
+        self._start_enrich()
 
     def action_open_browser(self) -> None:
         pr = self._get_current_pr()
