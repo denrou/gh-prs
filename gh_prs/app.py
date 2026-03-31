@@ -154,14 +154,23 @@ class PullRequestsApp(App[None]):
         padding: 1 2;
         background: $surface;
     }
-    #confirm-dialog {
+    ConfirmScreen {
         align: center middle;
+    }
+    #confirm-dialog {
         width: 60;
         height: auto;
-        max-height: 10;
+        max-height: 12;
         border: thick $warning;
         padding: 1 2;
-        background: $surface;
+        background: $boost;
+        color: $text;
+    }
+    #confirm-dialog Static {
+        width: 100%;
+        color: $text;
+        text-style: bold;
+        margin-bottom: 1;
     }
     #confirm-buttons {
         margin-top: 1;
