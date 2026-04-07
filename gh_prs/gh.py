@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -20,6 +20,9 @@ class PullRequest:
     is_draft: bool
     head_ref: str = ""
     review_decision: str = ""
+    roles: set[str] = field(default_factory=set)
+    # Computed once during enrichment; None means not yet enriched.
+    _attention: bool | None = field(default=None, repr=False)
 
     @classmethod
     def from_json(cls, data: dict) -> PullRequest:
@@ -47,12 +50,23 @@ class PullRequest:
         return self.repo.split("/")[-1]
 
     @property
+    def created_date(self) -> str:
+        return self.created_at.split("T")[0]
+
+    @property
     def updated_date(self) -> str:
         return self.updated_at.split("T")[0]
 
     @property
     def id(self) -> str:
         return f"{self.repo}#{self.number}"
+
+    def needs_attention(self) -> bool:
+        """Return True if this PR requires action from the current user.
+
+        Returns False until enrichment has run (conservative default).
+        """
+        return bool(self._attention)
 
 
 def _run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -94,21 +108,57 @@ def _search_prs(qualifier: str) -> list[PullRequest]:
 
 
 def fetch_prs() -> list[PullRequest]:
-    """Fetch open PRs assigned to or requesting review from the current user."""
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [
-            pool.submit(_search_prs, q) for q in ("review-requested", "assignee")
-        ]
-        seen: dict[str, PullRequest] = {}
-        for future in futures:
-            for pr in future.result():
-                seen[pr.id] = pr
+    """Fetch open PRs where the current user is author, reviewer, assignee, or participant."""
+    qualifiers = ["author", "review-requested", "assignee", "involves"]
+    seen: dict[str, PullRequest] = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_search_prs, q): q for q in qualifiers}
+        for future in as_completed(futures):
+            qualifier = futures[future]
+            try:
+                for pr in future.result():
+                    if pr.id in seen:
+                        seen[pr.id].roles.add(qualifier)
+                    else:
+                        pr.roles.add(qualifier)
+                        seen[pr.id] = pr
+            except RuntimeError:
+                pass
+    # Drop PRs from archived repos. Check unique repos in parallel.
+    repos = {pr.repo for pr in seen.values()}
+    with ThreadPoolExecutor(max_workers=min(len(repos), 8)) as pool:
+        archived = {
+            repo
+            for repo, is_archived in pool.map(_is_repo_archived, repos)
+            if is_archived
+        }
+    return sorted(
+        (pr for pr in seen.values() if pr.repo not in archived),
+        key=lambda p: p.updated_at,
+        reverse=True,
+    )
 
-    return sorted(seen.values(), key=lambda p: p.updated_at, reverse=True)
+
+def _is_repo_archived(repo: str) -> tuple[str, bool]:
+    result = _run_gh("repo", "view", repo, "--json", "isArchived", check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        return repo, False
+    try:
+        return repo, json.loads(result.stdout).get("isArchived", False)
+    except json.JSONDecodeError:
+        return repo, False
 
 
-def enrich_pr(pr: PullRequest) -> None:
-    """Fetch branch and review details for a single PR (mutates in place)."""
+def get_current_user() -> str:
+    """Return the login of the authenticated GitHub user."""
+    result = _run_gh("api", "user", "--jq", ".login", check=False)
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return ""
+
+
+def enrich_pr(pr: PullRequest, current_user: str = "") -> None:
+    """Fetch branch, review decision, and reviews for a single PR (mutates in place)."""
     try:
         detail = _run_gh(
             "pr",
@@ -117,7 +167,7 @@ def enrich_pr(pr: PullRequest) -> None:
             "--repo",
             pr.repo,
             "--json",
-            "headRefName,reviewDecision",
+            "headRefName,reviewDecision,reviews",
             check=False,
         )
     except RuntimeError:
@@ -130,6 +180,32 @@ def enrich_pr(pr: PullRequest) -> None:
         return
     pr.head_ref = info.get("headRefName", "")
     pr.review_decision = info.get("reviewDecision", "") or ""
+
+    # Compute and cache attention flag — avoids re-iterating reviews on every render.
+    if not pr.is_draft:
+        reviews = info.get("reviews", [])
+        my_reviews = [
+            r for r in reviews if (r.get("author") or {}).get("login") == current_user
+        ]
+        # Only the most recent review matters: a later APPROVED supersedes an earlier
+        # DISMISSED, so checking any() over all reviews would give false positives.
+        latest_my_review = (
+            max(my_reviews, key=lambda r: r.get("submittedAt", ""))
+            if my_reviews
+            else None
+        )
+        latest_state = latest_my_review.get("state") if latest_my_review else None
+        user_has_active_review = latest_state in ("APPROVED", "CHANGES_REQUESTED")
+        dismissed = latest_state == "DISMISSED"
+        review_req = (
+            "review-requested" in pr.roles
+            and pr.review_decision in ("REVIEW_REQUIRED", "")
+            and not user_has_active_review
+        )
+        ready_to_merge = "author" in pr.roles and pr.review_decision == "APPROVED"
+        pr._attention = bool(review_req or dismissed or ready_to_merge)
+    else:
+        pr._attention = False
 
 
 def approve_pr(repo: str, number: int) -> None:
@@ -161,6 +237,46 @@ def merge_pr(repo: str, number: int) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to merge {repo}#{number}: {result.stderr.strip()}")
+
+
+def fetch_pr_body(pr: PullRequest) -> str:
+    """Fetch the PR description body."""
+    result = _run_gh(
+        "pr", "view", str(pr.number), "--repo", pr.repo, "--json", "body", check=False
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return ""
+    try:
+        return json.loads(result.stdout).get("body", "") or ""
+    except json.JSONDecodeError:
+        return ""
+
+
+def fetch_pr_diff(pr: PullRequest) -> str:
+    """Fetch the unified diff for a PR."""
+    result = _run_gh("pr", "diff", str(pr.number), "--repo", pr.repo, check=False)
+    if result.returncode != 0:
+        return ""
+    return result.stdout
+
+
+def parse_diff(diff_text: str) -> list[tuple[str, str]]:
+    """Split a unified diff into (filename, chunk) pairs."""
+    files: list[tuple[str, str]] = []
+    current_file: str | None = None
+    current_lines: list[str] = []
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            if current_file is not None:
+                files.append((current_file, "\n".join(current_lines)))
+            # "diff --git a/foo/bar.py b/foo/bar.py" → "foo/bar.py"
+            current_file = line.split(" ")[-1][2:]
+            current_lines = [line]
+        elif current_file is not None:
+            current_lines.append(line)
+    if current_file is not None and current_lines:
+        files.append((current_file, "\n".join(current_lines)))
+    return files
 
 
 def open_in_browser(pr: PullRequest) -> None:

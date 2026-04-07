@@ -5,21 +5,36 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from rich.text import Text as RichText
 from textual import work
 from textual.app import App, ComposeResult
 from textual.worker import Worker
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.screen import ModalScreen, Screen
+from textual.widgets import (
+    Button,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    Static,
+)
 
 from gh_prs.gh import (
     PullRequest,
     approve_pr,
     enrich_pr,
+    fetch_pr_body,
+    fetch_pr_diff,
     fetch_prs,
+    get_current_user,
     merge_pr,
     open_in_browser,
+    parse_diff,
 )
 
 REVIEW_LABELS = {
@@ -28,6 +43,16 @@ REVIEW_LABELS = {
     "REVIEW_REQUIRED": "Review req",
     "": "—",
 }
+
+# Ordered list of (qualifier, display_label) for role filters.
+# Key bindings 1-5 map positionally to this list.
+ROLE_FILTERS = [
+    ("", "All"),
+    ("author", "Author"),
+    ("review-requested", "Review Req"),
+    ("assignee", "Assigned"),
+    ("involves", "Participant"),
+]
 
 
 class FilterInput(ModalScreen[str | None]):
@@ -58,39 +83,187 @@ class FilterInput(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class DetailScreen(ModalScreen[None]):
-    """Shows full details of a pull request."""
+class _MenuItem(ListItem):
+    """A ListView item carrying a semantic kind and optional value."""
+
+    def __init__(self, label: str, kind: str, value: str = "") -> None:
+        super().__init__(Label(label))
+        self.kind = kind
+        self.value = value
+
+
+class PRDetailScreen(Screen[str | None]):
+    """Full-screen PR detail: content on the left, navigation menu on the right."""
 
     BINDINGS = [
-        Binding("escape", "close", "Close"),
-        Binding("q", "close", "Close"),
+        Binding("escape", "back", "Back"),
+        Binding("j", "menu_down", "Down", show=False),
+        Binding("k", "menu_up", "Up", show=False),
     ]
 
-    def __init__(self, pr: PullRequest) -> None:
+    def __init__(self, pr: PullRequest, current_user: str = "") -> None:
         super().__init__()
         self._pr = pr
+        self._current_user = current_user
+        self._body: str = ""
+        self._file_diffs: list[tuple[str, str]] = []
+        self._current_kind: str = "overview"
+        self._current_value: str = ""
 
     def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal(id="detail-layout"):
+            with ScrollableContainer(id="detail-content"):
+                yield Static("", id="detail-body", markup=False)
+            yield ListView(id="detail-menu")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._rebuild_menu(loading=True)
+        self._show_overview()
+        self.query_one("#detail-menu", ListView).focus()
+        self._fetch_detail()
+
+    def _rebuild_menu(self, *, loading: bool = False) -> None:
+        menu = self.query_one("#detail-menu", ListView)
+        menu.clear()
+        menu.append(_MenuItem("Overview", kind="overview"))
+        if self._file_diffs:
+            menu.append(_MenuItem("─" * 26, kind="separator"))
+            for filename, _ in self._file_diffs:
+                menu.append(
+                    _MenuItem(filename.split("/")[-1], kind="file", value=filename)
+                )
+        elif loading:
+            menu.append(_MenuItem("  loading diffs…", kind="separator"))
+        menu.append(_MenuItem("─" * 26, kind="separator"))
+        menu.append(_MenuItem("Approve", kind="approve"))
+        menu.append(_MenuItem("Merge", kind="merge"))
+        for item in menu.query(_MenuItem):
+            if item.kind == "separator":
+                item.disabled = True
+
+    @work(thread=True)
+    def _fetch_detail(self) -> None:
+        pr = self._pr
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            body_f = pool.submit(fetch_pr_body, pr)
+            diff_f = pool.submit(fetch_pr_diff, pr)
+            body = body_f.result()
+            diff_text = diff_f.result()
+        file_diffs = parse_diff(diff_text)
+
+        def _update() -> None:
+            self._body = body
+            self._file_diffs = file_diffs
+            self._rebuild_menu(loading=False)
+            if self._current_kind == "overview":
+                self._show_overview()
+
+        self.app.call_from_thread(_update)
+
+    def _show_overview(self) -> None:
         p = self._pr
         review = REVIEW_LABELS.get(p.review_decision, p.review_decision)
-        text = (
-            f"[b]Title:[/b]   {p.title}\n"
-            f"[b]Repo:[/b]    {p.repo}\n"
-            f"[b]Number:[/b]  #{p.number}\n"
-            f"[b]Author:[/b]  {p.author}\n"
-            f"[b]Branch:[/b]  {p.head_ref}\n"
-            f"[b]Draft:[/b]   {'Yes' if p.is_draft else 'No'}\n"
-            f"[b]Review:[/b]  {review}\n"
-            f"[b]Updated:[/b] {p.updated_at}\n"
-            f"[b]Created:[/b] {p.created_at}\n"
-            f"[b]URL:[/b]     {p.url}\n"
-        )
-        with Vertical(id="detail-dialog"):
-            yield Static(text, markup=True)
-            yield Label("[dim]Press Escape or q to close[/dim]")
+        text = RichText()
+        text.append(f"Title:    {p.title}\n", style="bold")
+        text.append(f"Repo:     {p.repo}\n")
+        text.append(f"Number:   #{p.number}\n")
+        text.append(f"Author:   {p.author}\n")
+        text.append(f"Branch:   {p.head_ref or '—'}\n")
+        text.append(f"Draft:    {'Yes' if p.is_draft else 'No'}\n")
+        text.append(f"Review:   {review}\n")
+        text.append(f"Created:  {p.created_date}\n")
+        text.append(f"Updated:  {p.updated_date}\n")
+        text.append(f"URL:      {p.url}\n")
+        if self._body:
+            text.append("\n" + "─" * 60 + "\n", style="dim")
+            text.append("\n" + self._body + "\n")
+        self.query_one("#detail-body", Static).update(text)
 
-    def action_close(self) -> None:
+    def _show_file_diff(self, filename: str) -> None:
+        chunk = next((c for f, c in self._file_diffs if f == filename), "")
+        text = RichText(no_wrap=False)
+        text.append(filename + "\n\n", style="bold")
+        for line in chunk.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                text.append(line + "\n", style="green")
+            elif line.startswith("-") and not line.startswith("---"):
+                text.append(line + "\n", style="red")
+            elif line.startswith("@@"):
+                text.append(line + "\n", style="cyan")
+            else:
+                text.append(line + "\n")
+        self.query_one("#detail-body", Static).update(text)
+
+    def _show_content(self, kind: str, value: str = "") -> None:
+        self._current_kind = kind
+        self._current_value = value
+        self.query_one("#detail-content", ScrollableContainer).scroll_home(
+            animate=False
+        )
+        if kind == "overview":
+            self._show_overview()
+        elif kind == "file":
+            self._show_file_diff(value)
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is None or not isinstance(event.item, _MenuItem):
+            return
+        if event.item.kind in ("overview", "file"):
+            self._show_content(event.item.kind, event.item.value)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if not isinstance(event.item, _MenuItem):
+            return
+        if event.item.kind == "approve":
+            self._do_approve()
+        elif event.item.kind == "merge":
+            self._trigger_merge()
+
+    @work(thread=True)
+    def _do_approve(self) -> None:
+        pr = self._pr
+        try:
+            approve_pr(pr.repo, pr.number)
+            pr.review_decision = "APPROVED"
+            pr._attention = False
+            self.app.call_from_thread(
+                lambda: self.notify("Approved", severity="information")
+            )
+            if self._current_kind == "overview":
+                self.app.call_from_thread(self._show_overview)
+        except RuntimeError as e:
+            msg = str(e)
+            self.app.call_from_thread(lambda: self.notify(msg, severity="error"))
+
+    def _trigger_merge(self) -> None:
+        msg = f"Squash-merge and delete branch for:\n[b]{self._pr.id}[/b]\n\nAre you sure?"
+
+        def on_confirm(confirmed: bool) -> None:
+            if confirmed:
+                self._do_merge()
+
+        self.push_screen(ConfirmScreen(msg), callback=on_confirm)
+
+    @work(thread=True)
+    def _do_merge(self) -> None:
+        pr = self._pr
+        try:
+            merge_pr(pr.repo, pr.number)
+            self.app.call_from_thread(lambda: self.dismiss("merged"))
+        except RuntimeError as e:
+            msg = str(e)
+            self.app.call_from_thread(lambda: self.notify(msg, severity="error"))
+
+    def action_back(self) -> None:
         self.dismiss(None)
+
+    def action_menu_down(self) -> None:
+        self.query_one("#detail-menu", ListView).action_cursor_down()
+
+    def action_menu_up(self) -> None:
+        self.query_one("#detail-menu", ListView).action_cursor_up()
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -127,6 +300,19 @@ class PullRequestsApp(App[None]):
     CSS = """
     Screen {
         background: $surface;
+    }
+    #detail-layout {
+        height: 1fr;
+    }
+    #detail-content {
+        width: 3fr;
+        min-width: 40;
+        padding: 0 1;
+    }
+    #detail-menu {
+        width: 1fr;
+        min-width: 30;
+        border-left: thick $accent;
     }
     #status-bar {
         height: 1;
@@ -186,7 +372,7 @@ class PullRequestsApp(App[None]):
         Binding("A", "approve", "Approve"),
         Binding("M", "merge", "Merge (squash)"),
         Binding("o", "open_browser", "Open in browser"),
-        Binding("enter", "show_detail", "Details"),
+        Binding("enter", "show_detail", "Details", show=False),
         Binding("/", "filter", "Filter"),
         Binding("c", "clear_filter", "Clear filter"),
         Binding("g", "refresh_list", "Refresh"),
@@ -194,6 +380,11 @@ class PullRequestsApp(App[None]):
         Binding("a", "select_all", "Select all"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
+        Binding("1", "set_role('')", "All", show=False),
+        Binding("2", "set_role('author')", "Author", show=False),
+        Binding("3", "set_role('review-requested')", "Review Req", show=False),
+        Binding("4", "set_role('assignee')", "Assigned", show=False),
+        Binding("5", "set_role('involves')", "Participant", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -203,6 +394,8 @@ class PullRequestsApp(App[None]):
         self._filtered: list[PullRequest] = []
         self._selected: set[str] = set()
         self._filter_text: str = ""
+        self._role_filter: str = ""
+        self._current_user: str = ""
         self._enrich_worker: Worker[None] | None = None
 
     def compose(self) -> ComposeResult:
@@ -216,7 +409,17 @@ class PullRequestsApp(App[None]):
         table.cursor_type = "row"
         table.zebra_stripes = True
         table.add_columns(
-            " ", "#", "Repo", "Author", "Title", "Draft", "Review", "Updated"
+            " ",
+            "!",
+            "#",
+            "Role",
+            "Repo",
+            "Author",
+            "Title",
+            "Draft",
+            "Review",
+            "Created",
+            "Updated",
         )
         self._load_prs()
 
@@ -228,11 +431,19 @@ class PullRequestsApp(App[None]):
     @work(thread=True)
     def _load_prs(self) -> None:
         self._update_status("Fetching pull requests...")
-        try:
-            prs = fetch_prs()
-        except RuntimeError as e:
-            self._update_status(str(e))
-            return
+        # Fetch current user and PRs in parallel — they are independent.
+        with ThreadPoolExecutor(max_workers=2) as boot:
+            user_future = (
+                boot.submit(get_current_user) if not self._current_user else None
+            )
+            prs_future = boot.submit(fetch_prs)
+            if user_future is not None:
+                self._current_user = user_future.result()
+            try:
+                prs = prs_future.result()
+            except RuntimeError as e:
+                self._update_status(str(e))
+                return
 
         def _set_and_render() -> None:
             self._prs = prs
@@ -253,8 +464,12 @@ class PullRequestsApp(App[None]):
         prs = list(self._prs)
         total = len(prs)
         done = 0
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(enrich_pr, pr): pr for pr in prs}
+        current_user = self._current_user
+        # Re-render every BATCH completions instead of after every single PR,
+        # turning O(n²) table redraws into O(n²/BATCH).
+        BATCH = 10
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(enrich_pr, pr, current_user): pr for pr in prs}
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -262,7 +477,8 @@ class PullRequestsApp(App[None]):
                     pass
                 done += 1
                 self._update_status(f"Loading details... {done}/{total}")
-                self.call_from_thread(self._apply_filter_and_render)
+                if done % BATCH == 0 or done == total:
+                    self.call_from_thread(self._apply_filter_and_render)
 
     def _update_status(self, text: str) -> None:
         def _set() -> None:
@@ -270,7 +486,31 @@ class PullRequestsApp(App[None]):
 
         self.call_from_thread(_set)
 
+    def _role_abbrev(self, pr: PullRequest) -> str:
+        """Single-char abbreviations for each role a PR matches."""
+        parts = []
+        if "author" in pr.roles:
+            parts.append("A")
+        if "review-requested" in pr.roles:
+            parts.append("R")
+        if "assignee" in pr.roles:
+            parts.append("a")
+        if "involves" in pr.roles and not pr.roles & {
+            "author",
+            "review-requested",
+            "assignee",
+        }:
+            parts.append("P")
+        return "".join(parts) or "·"
+
     def _apply_filter_and_render(self) -> None:
+        candidates = self._prs
+
+        # Role filter
+        if self._role_filter:
+            candidates = [p for p in candidates if self._role_filter in p.roles]
+
+        # Text filter
         if self._filter_text:
             try:
                 pat = re.compile(self._filter_text, re.IGNORECASE)
@@ -279,30 +519,34 @@ class PullRequestsApp(App[None]):
                     f"Invalid regex: {self._filter_text}"
                 )
                 return
-            self._filtered = [
+            candidates = [
                 p
-                for p in self._prs
+                for p in candidates
                 if pat.search(p.repo)
                 or pat.search(p.title)
                 or pat.search(p.author)
                 or pat.search(p.head_ref)
             ]
-        else:
-            self._filtered = list(self._prs)
+
+        self._filtered = candidates
 
         table = self.query_one("#prs-table", DataTable)
         table.clear()
         for p in self._filtered:
             sel = "*" if p.id in self._selected else " "
+            attn = "*" if p.needs_attention() else " "
             review = REVIEW_LABELS.get(p.review_decision, p.review_decision)
             table.add_row(
                 sel,
+                attn,
                 str(p.number),
+                self._role_abbrev(p),
                 p.repo_short,
                 p.author,
                 p.title,
                 "draft" if p.is_draft else "",
                 review,
+                p.created_date,
                 p.updated_date,
                 key=p.id,
             )
@@ -310,10 +554,14 @@ class PullRequestsApp(App[None]):
         total = len(self._prs)
         shown = len(self._filtered)
         selected = len(self._selected)
+        role_label = next(
+            (lbl for q, lbl in ROLE_FILTERS if q == self._role_filter), "All"
+        )
+        role_info = f"  role: {role_label}" if self._role_filter else ""
         filter_info = f"  filter: '{self._filter_text}'" if self._filter_text else ""
         sel_info = f"  selected: {selected}" if selected else ""
         self.query_one("#status-bar", Static).update(
-            f"{shown}/{total} PRs{filter_info}{sel_info}"
+            f"{shown}/{total} PRs{role_info}{filter_info}{sel_info}  [1-5: role filter]"
         )
 
     def action_cursor_down(self) -> None:
@@ -441,10 +689,21 @@ class PullRequestsApp(App[None]):
         if pr:
             open_in_browser(pr)
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+        self.action_show_detail()
+
     def action_show_detail(self) -> None:
         pr = self._get_current_pr()
-        if pr:
-            self.push_screen(DetailScreen(pr))
+        if not pr:
+            return
+
+        def on_dismissed(result: str | None) -> None:
+            if result == "merged":
+                self._selected.discard(pr.id)
+                self._load_prs()
+
+        self.push_screen(PRDetailScreen(pr, self._current_user), callback=on_dismissed)
 
     def action_filter(self) -> None:
         def on_dismiss(value: str | None) -> None:
@@ -456,6 +715,10 @@ class PullRequestsApp(App[None]):
 
     def action_clear_filter(self) -> None:
         self._filter_text = ""
+        self._apply_filter_and_render()
+
+    def action_set_role(self, role: str) -> None:
+        self._role_filter = role
         self._apply_filter_and_render()
 
     def action_refresh_list(self) -> None:
