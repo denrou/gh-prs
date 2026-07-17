@@ -1,13 +1,12 @@
 """Thin wrapper around the gh CLI for GitHub pull requests."""
 
-from __future__ import annotations
-
 import json
 import re
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from typing import Any
 
 
 class GhError(RuntimeError):
@@ -84,7 +83,7 @@ query($q: String!, $limit: Int!) {
 )
 
 
-@dataclass
+@dataclass(slots=True)
 class PullRequest:
     number: int
     repo: str
@@ -109,7 +108,9 @@ class PullRequest:
     attention_reasons: set[str] = field(default_factory=set)
 
     @classmethod
-    def from_graphql(cls, node: dict, current_user: str = "") -> PullRequest:
+    def from_graphql(
+        cls, node: dict[str, Any], current_user: str = ""
+    ) -> "PullRequest":
         commits = node.get("commits")
         if not isinstance(commits, dict):
             # Shape drift: the commits block should always be present. Unknown
@@ -204,7 +205,7 @@ def _search_string(qualifier: str) -> str:
     return f"is:pr is:open archived:false {_SEARCH_FILTERS[qualifier]}"
 
 
-def _graphql(context: str, *args: str) -> dict:
+def _graphql(context: str, *args: str) -> dict[str, Any]:
     """Run a gh GraphQL request and return its validated ``data`` block.
 
     Every deviation from the expected response envelope raises ``GhError`` —
@@ -264,7 +265,7 @@ def count_prs(qualifier: str) -> int:
     return int(results["issueCount"] or 0)
 
 
-def _search(qualifier: str) -> tuple[str, list[dict], int]:
+def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
     """Run one qualifier's search; return (viewer_login, PR nodes, issue_count).
 
     ``issue_count`` is the exact server-side match count, which can exceed the
@@ -314,7 +315,7 @@ def fetch_prs(
     """
     if qualifiers is None:
         qualifiers = list(ALL_QUALIFIERS)
-    results: dict[str, tuple[str, list[dict], int]] = {}
+    results: dict[str, tuple[str, list[dict[str, Any]], int]] = {}
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=max(len(qualifiers), 1)) as pool:
         futures = {pool.submit(_search, q): q for q in qualifiers}

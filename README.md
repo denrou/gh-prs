@@ -9,7 +9,9 @@ By default it shows only the PRs that need your attention:
   once the PR is approved (mergeable without you) it is hidden unless you are
   personally on the requested-reviewers list (not just through a team), and it
   is also hidden while changes are requested (the author is reworking it).
-  Drafts and conflicting PRs are excluded — a review would be staled by the rebase.
+  Drafts are excluded (not ready for review), as are conflicting PRs (a review
+  would be staled by the rebase). A PR also resurfaces here when your previous
+  review was dismissed.
 - **Ready to ship** — PRs you created that are approved, with CI green (or no
   checks) and no conflicts.
 - **CI failed** — PRs you created where a check is failing.
@@ -53,7 +55,8 @@ gh prs --no-color   # disable colored output
 ```
 
 `--count` exits non-zero when fetching fails, so status-bar scripts can tell
-"no PRs" apart from "the lookup broke".
+"no PRs" apart from "the lookup broke". With `-c` or `-r` it uses a fast
+count-only query (well under a second) — ideal for frequent polling.
 
 For status bars, prefer the `uv tool install` binary (`~/.local/bin/gh-prs`)
 over `uv run` inside the repo — it skips ~250 ms of project resolution per

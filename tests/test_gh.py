@@ -20,12 +20,11 @@ def _pr(**overrides) -> PullRequest:
         created_at="2026-07-01T12:00:00Z",
         is_draft=False,
     )
-    defaults.update(overrides)
-    return PullRequest(**defaults)
+    return PullRequest(**(defaults | overrides))
 
 
 def _node(**overrides) -> dict:
-    """A GraphQL PullRequest node as returned by the aliased search blocks."""
+    """A GraphQL PullRequest node as returned by a qualifier's search query."""
     node = {
         "number": 42,
         "title": "Fix parser",
@@ -203,23 +202,23 @@ class TestFromGraphql:
         pr = PullRequest.from_graphql(_node(commits={"nodes": []}), "me")
         assert pr.checks_state == ""
 
-    def test_rollup_states_normalized(self):
-        cases = {
-            "SUCCESS": "SUCCESS",
-            "FAILURE": "FAILURE",
-            "ERROR": "FAILURE",
-            "PENDING": "PENDING",
-            "EXPECTED": "PENDING",
-        }
-        for graphql_state, expected in cases.items():
-            node = _node(
-                commits={
-                    "nodes": [
-                        {"commit": {"statusCheckRollup": {"state": graphql_state}}}
-                    ]
-                }
-            )
-            assert PullRequest.from_graphql(node, "me").checks_state == expected
+    @pytest.mark.parametrize(
+        ("graphql_state", "expected"),
+        [
+            ("SUCCESS", "SUCCESS"),
+            ("FAILURE", "FAILURE"),
+            ("ERROR", "FAILURE"),
+            ("PENDING", "PENDING"),
+            ("EXPECTED", "PENDING"),
+        ],
+    )
+    def test_rollup_states_normalized(self, graphql_state, expected):
+        node = _node(
+            commits={
+                "nodes": [{"commit": {"statusCheckRollup": {"state": graphql_state}}}]
+            }
+        )
+        assert PullRequest.from_graphql(node, "me").checks_state == expected
 
     def test_unknown_rollup_state_is_pending_not_success(self):
         # A future GitHub state must never silently count as green.

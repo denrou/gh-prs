@@ -21,7 +21,7 @@ Two-module design inside `gh_prs/`:
 
 - **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
   existing `gh auth` session. Exposes a `PullRequest` dataclass plus
-  `fetch_prs()`, `ALL_QUALIFIERS`, and the `GhError` exception.
+  `fetch_prs()`, `count_prs()`, `ALL_QUALIFIERS`, and the `GhError` exception.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
 - **`app.py`** — Backwards-compatible shim re-exporting `cli.main` (the old
@@ -36,22 +36,33 @@ CI rollup state, `latestReviews`, `reviewRequests`, plus the viewer's login —
 so there is no per-PR enrichment phase. `attention_reasons` is computed by the
 pure `_attention_reasons()` helper (unit-tested in `tests/test_gh.py`).
 
-Performance notes (measured):
+Performance notes (measured once; exact figures drift, the ratios hold):
 
 - GitHub executes aliased search blocks _sequentially_ within one GraphQL
   request — that's why each qualifier gets its own parallel request (cost =
-  slowest search, ~2 s for `author:@me`, not the sum).
-- GitHub also throttles concurrent searches per token; `-a` is bounded by the
-  inherently slow `involves:@me` search (~4 s).
-- Each search is capped at `_SEARCH_LIMIT` (100) nodes — larger result sets
-  are silently truncated.
+  slowest search, not the sum).
+- GitHub also throttles concurrent searches per token; `-a` is bounded by
+  `involves:@me`, the slowest search by far.
+- Node _hydration_ dominates search cost, not the search itself — a
+  count-only `issueCount` query is roughly an order of magnitude faster than
+  a hydrated one. `count_prs()` exploits this for single-qualifier `--count`
+  (`-c`/`-r`), the status-bar polling path.
+- Each search is capped at `_SEARCH_LIMIT` (100) nodes; when `issueCount`
+  exceeds it, `fetch_prs()` reports the truncation through its `on_warning`
+  callback (the CLI prints it to stderr). Counts from `count_prs()` are exact
+  regardless of the cap.
 
 ### Error handling
 
 "Error" must never look like "nothing to do" (critical for `--count` in status
 bars). All `gh` failures raise `GhError` — including per-qualifier search
-failures (partial results would silently hide PRs) and subprocess timeouts
-(60 s). The CLI prints the error to stderr and exits non-zero.
+failures (partial results would silently hide PRs), subprocess timeouts
+(60 s), and any deviation from the expected GraphQL response envelope
+(validated in `_graphql()`/`_search()`). The same fail-safe direction applies
+to per-PR fields: unknown CI states map to `PENDING`, and "ready" requires a
+positive `MERGEABLE` (GitHub reports `UNKNOWN` while recomputing
+mergeability). The CLI prints errors to stderr and exits non-zero (130 on
+Ctrl-C).
 
 ### Attention logic (`_attention_reasons`)
 

@@ -1,10 +1,9 @@
 """Command-line interface for listing GitHub pull requests that need action."""
 
-from __future__ import annotations
-
 import argparse
-import json
 import sys
+from importlib.metadata import version
+from typing import Any
 
 from rich.console import Console
 from rich.markup import escape
@@ -26,6 +25,15 @@ _SECTIONS = [
     ("ci-failed", "CI failed", "bold red"),
     ("conflict", "Conflicts to resolve", "bold yellow"),
 ]
+
+# Per-view configuration: search qualifiers, flat-list title, and its style.
+# The "attention" view renders grouped sections instead of a flat list.
+_VIEWS: dict[str, tuple[list[str], str, str]] = {
+    "attention": (["author", "review-requested"], "", ""),
+    "created": (["author"], "PRs you created", "bold blue"),
+    "review": (["review-requested"], "PRs awaiting your review", "bold cyan"),
+    "all": (list(ALL_QUALIFIERS), "All PRs you are involved with", "bold"),
+}
 
 _REVIEW_STYLE = {
     "APPROVED": ("Approved", "green"),
@@ -132,7 +140,7 @@ def _render_list(
     console.print(table)
 
 
-def _to_dict(pr: PullRequest) -> dict:
+def _to_dict(pr: PullRequest) -> dict[str, Any]:
     return {
         "repo": pr.repo,
         "number": pr.number,
@@ -143,6 +151,8 @@ def _to_dict(pr: PullRequest) -> dict:
         "reviewDecision": pr.review_decision,
         "checksState": pr.checks_state,
         "mergeable": pr.mergeable,
+        "myReviewState": pr.my_review_state,
+        "reviewRequestedExplicitly": pr.review_requested_explicitly,
         "roles": sorted(pr.roles),
         "attentionReasons": sorted(pr.attention_reasons),
         "updatedAt": pr.updated_at,
@@ -150,19 +160,37 @@ def _to_dict(pr: PullRequest) -> dict:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="gh prs",
         description="List GitHub pull requests that need your attention.",
     )
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("-c", "--created", action="store_true", help="PRs you created")
     group.add_argument(
-        "-r", "--review", action="store_true", help="PRs awaiting your review"
+        "-c",
+        "--created",
+        dest="view",
+        action="store_const",
+        const="created",
+        help="PRs you created",
     )
     group.add_argument(
-        "-a", "--all", action="store_true", help="all PRs you are involved with"
+        "-r",
+        "--review",
+        dest="view",
+        action="store_const",
+        const="review",
+        help="PRs awaiting your review",
     )
+    group.add_argument(
+        "-a",
+        "--all",
+        dest="view",
+        action="store_const",
+        const="all",
+        help="all PRs you are involved with",
+    )
+    parser.set_defaults(view="attention")
     parser.add_argument(
         "--json", action="store_true", help="output raw JSON instead of a table"
     )
@@ -174,20 +202,15 @@ def main() -> int:
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {version('gh-prs')}"
+    )
+    args = parser.parse_args(argv)
 
     console = Console(no_color=args.no_color, highlight=False)
-    err = Console(stderr=True, no_color=args.no_color)
+    err = Console(stderr=True, no_color=args.no_color, highlight=False)
 
-    # Select the minimal set of search qualifiers needed for the requested view.
-    if args.created:
-        qualifiers = ["author"]
-    elif args.review:
-        qualifiers = ["review-requested"]
-    elif args.all:
-        qualifiers = list(ALL_QUALIFIERS)
-    else:
-        qualifiers = ["author", "review-requested"]
+    qualifiers, list_title, list_style = _VIEWS[args.view]
 
     def warn(msg: str) -> None:
         err.print(f"[yellow]Warning:[/yellow] {msg}")
@@ -221,23 +244,20 @@ def main() -> int:
     if args.count:
         # In the default view "count" means PRs needing attention; the explicit
         # views (-c/-r/-a) count every PR they would list.
-        default_view = not (args.created or args.review or args.all)
-        n = sum(pr.needs_attention() for pr in prs) if default_view else len(prs)
-        print(n)
+        if args.view == "attention":
+            print(sum(pr.needs_attention() for pr in prs))
+        else:
+            print(len(prs))
         return 0
 
     if args.json:
-        console.print_json(json.dumps([_to_dict(pr) for pr in prs]))
+        console.print_json(data=[_to_dict(pr) for pr in prs])
         return 0
 
-    if args.created:
-        _render_list(console, prs, title="PRs you created", style="bold blue")
-    elif args.review:
-        _render_list(console, prs, title="PRs awaiting your review", style="bold cyan")
-    elif args.all:
-        _render_list(console, prs, title="All PRs you are involved with", style="bold")
-    else:
+    if args.view == "attention":
         _render_attention(console, prs)
+    else:
+        _render_list(console, prs, title=list_title, style=list_style)
 
     return 0
 

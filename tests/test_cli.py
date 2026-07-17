@@ -1,14 +1,13 @@
-"""Tests for CLI behavior: qualifier selection, --count semantics, escaping."""
-
-import sys
+"""CLI tests: qualifier selection, --count semantics, failure surfacing, escaping."""
 
 import pytest
+from rich.console import Console
 
 from gh_prs import cli
 from gh_prs.gh import GhError, PullRequest
 
 
-def _pr(number: int, *, attention: set[str] | None = None, **overrides) -> PullRequest:
+def _pr(number: int, **overrides) -> PullRequest:
     defaults = dict(
         repo="acme/widgets",
         title=f"PR {number}",
@@ -18,10 +17,7 @@ def _pr(number: int, *, attention: set[str] | None = None, **overrides) -> PullR
         created_at="2026-07-01T12:00:00Z",
         is_draft=False,
     )
-    defaults.update(overrides)
-    pr = PullRequest(number=number, **defaults)
-    pr.attention_reasons = attention or set()
-    return pr
+    return PullRequest(number=number, **(defaults | overrides))
 
 
 @pytest.fixture
@@ -37,30 +33,21 @@ def fake_backend(monkeypatch):
     return calls
 
 
-def _run(monkeypatch, argv: list[str]) -> int:
-    monkeypatch.setattr(sys, "argv", ["gh-prs", *argv])
-    return cli.main()
-
-
 class TestQualifierSelection:
-    def test_default_view_searches_author_and_review_requested(
-        self, monkeypatch, fake_backend
-    ):
-        _run(monkeypatch, [])
+    def test_default_view_searches_author_and_review_requested(self, fake_backend):
+        cli.main([])
         assert fake_backend["qualifiers"] == ["author", "review-requested"]
 
-    def test_created_view_searches_author_only(self, monkeypatch, fake_backend):
-        _run(monkeypatch, ["-c"])
+    def test_created_view_searches_author_only(self, fake_backend):
+        cli.main(["-c"])
         assert fake_backend["qualifiers"] == ["author"]
 
-    def test_review_view_searches_review_requested_only(
-        self, monkeypatch, fake_backend
-    ):
-        _run(monkeypatch, ["-r"])
+    def test_review_view_searches_review_requested_only(self, fake_backend):
+        cli.main(["-r"])
         assert fake_backend["qualifiers"] == ["review-requested"]
 
-    def test_all_view_searches_all_qualifiers(self, monkeypatch, fake_backend):
-        _run(monkeypatch, ["-a"])
+    def test_all_view_searches_all_qualifiers(self, fake_backend):
+        cli.main(["-a"])
         assert fake_backend["qualifiers"] == [
             "author",
             "review-requested",
@@ -70,15 +57,13 @@ class TestQualifierSelection:
 
 
 class TestCountSemantics:
-    def test_default_count_only_counts_attention(
-        self, monkeypatch, fake_backend, capsys
-    ):
+    def test_default_count_only_counts_attention(self, fake_backend, capsys):
         fake_backend["prs"] = [
-            _pr(1, attention={"review"}),
+            _pr(1, attention_reasons={"review"}),
             _pr(2),
-            _pr(3, attention={"ready", "conflict"}),
+            _pr(3, attention_reasons={"ready", "conflict"}),
         ]
-        assert _run(monkeypatch, ["--count"]) == 0
+        assert cli.main(["--count"]) == 0
         assert capsys.readouterr().out.strip() == "2"
 
     def test_single_qualifier_count_uses_fast_path(
@@ -92,18 +77,16 @@ class TestCountSemantics:
             return 3
 
         monkeypatch.setattr(cli, "count_prs", fake_count)
-        assert _run(monkeypatch, ["-c", "--count"]) == 0
+        assert cli.main(["-c", "--count"]) == 0
         assert capsys.readouterr().out.strip() == "3"
         assert counted == ["author"]
         assert fake_backend["qualifiers"] is None  # fetch_prs never called
 
-    def test_all_view_count_still_deduplicates_via_fetch(
-        self, monkeypatch, fake_backend, capsys
-    ):
+    def test_all_view_count_still_deduplicates_via_fetch(self, fake_backend, capsys):
         # -a spans several searches whose union must be de-duplicated, so it
         # keeps the full fetch path.
         fake_backend["prs"] = [_pr(1), _pr(2), _pr(3)]
-        assert _run(monkeypatch, ["-a", "--count"]) == 0
+        assert cli.main(["-a", "--count"]) == 0
         assert capsys.readouterr().out.strip() == "3"
         assert fake_backend["qualifiers"] is not None
 
@@ -112,20 +95,55 @@ class TestCountSemantics:
             raise GhError("rate limited")
 
         monkeypatch.setattr(cli, "count_prs", boom)
-        assert _run(monkeypatch, ["-r", "--count"]) == 1
+        assert cli.main(["-r", "--count"]) == 1
         assert "rate limited" in capsys.readouterr().err
 
 
 class TestFailureSurfacing:
-    def test_fetch_error_prints_error_and_exits_nonzero(
-        self, monkeypatch, fake_backend, capsys
-    ):
+    def test_fetch_error_prints_error_and_exits_nonzero(self, monkeypatch, capsys):
         def boom(qualifiers=None, on_warning=None):
             raise GhError("token expired")
 
         monkeypatch.setattr(cli, "fetch_prs", boom)
-        assert _run(monkeypatch, []) == 1
+        assert cli.main([]) == 1
         assert "token expired" in capsys.readouterr().err
+
+
+class TestJsonOutput:
+    def test_json_field_contract(self, fake_backend, capsys):
+        # --json is a scripting interface; its key names are a contract.
+        fake_backend["prs"] = [
+            _pr(
+                7,
+                review_decision="APPROVED",
+                my_review_state="DISMISSED",
+                review_requested_explicitly=True,
+                roles={"review-requested", "author"},
+                attention_reasons={"review"},
+            )
+        ]
+        assert cli.main(["--json", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        for key in (
+            '"repo"',
+            '"number"',
+            '"title"',
+            '"author"',
+            '"url"',
+            '"isDraft"',
+            '"reviewDecision"',
+            '"checksState"',
+            '"mergeable"',
+            '"myReviewState"',
+            '"reviewRequestedExplicitly"',
+            '"roles"',
+            '"attentionReasons"',
+            '"updatedAt"',
+            '"createdAt"',
+        ):
+            assert key in out, key
+        # Sets are serialized sorted for stable output.
+        assert out.index('"author"') < out.index('"review-requested"')
 
 
 class TestEscaping:
@@ -136,8 +154,6 @@ class TestEscaping:
         assert cell.startswith("\\[link=")
 
     def test_unmatched_closing_tag_does_not_crash_render(self):
-        from rich.console import Console
-
-        pr = _pr(1, title="broken [/bold] title", attention={"review"})
+        pr = _pr(1, title="broken [/bold] title", attention_reasons={"review"})
         console = Console(no_color=True, force_terminal=False)
         cli._render_attention(console, [pr])  # must not raise MarkupError
