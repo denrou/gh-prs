@@ -19,43 +19,51 @@ uv add --dev <pkg>          # Add dev dependency
 
 Two-module design inside `gh_prs/`:
 
-- **`gh.py`** — Stateless wrapper around the `gh` CLI. Uses `gh search prs` and
-  `gh pr` subcommands via `subprocess.run()`, relying on the user's existing
-  `gh auth` session. Exposes a `PullRequest` dataclass plus `fetch_prs()`,
-  `enrich_pr()`, and `get_current_user()`.
+- **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
+  existing `gh auth` session. Exposes a `PullRequest` dataclass plus
+  `fetch_prs()`, `ALL_QUALIFIERS`, and the `GhError` exception.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
-  Fetches, enriches in parallel, and prints grouped/colored tables. Entry point
-  is `gh_prs.cli:main`.
+  Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
 - **`app.py`** — Backwards-compatible shim re-exporting `cli.main` (the old
   Textual TUI was removed in 0.3.0).
 
-### Two-phase loading
+### Loading (single GraphQL round-trip per qualifier)
 
-`gh search prs --json` only supports a limited set of fields (no `headRefName`,
-`reviewDecision`, `statusCheckRollup`). Loading works in two phases:
+`fetch_prs(qualifiers)` runs one `gh api graphql` search per qualifier
+(`author`, `review-requested`, `assignee`, `involves`) in parallel threads.
+Each search fetches everything in one shot — review decision, mergeability,
+CI rollup state, `latestReviews`, `reviewRequests`, plus the viewer's login —
+so there is no per-PR enrichment phase. `attention_reasons` is computed by the
+pure `_attention_reasons()` helper (unit-tested in `tests/test_gh.py`).
 
-1. **Fast search** — `fetch_prs(qualifiers)` runs `gh search prs` queries in
-   parallel (only the qualifiers needed for the requested view).
-2. **Enrichment** — `enrich_pr()` calls `gh pr view --json ...` per PR (up to 8
-   concurrent workers) to fetch review decision, mergeability, and CI rollup,
-   then computes each PR's `attention_reasons` (pure helper
-   `_attention_reasons()`, unit-tested in `tests/test_gh.py`).
+Performance notes (measured):
+
+- GitHub executes aliased search blocks _sequentially_ within one GraphQL
+  request — that's why each qualifier gets its own parallel request (cost =
+  slowest search, ~2 s for `author:@me`, not the sum).
+- GitHub also throttles concurrent searches per token; `-a` is bounded by the
+  inherently slow `involves:@me` search (~4 s).
+- Each search is capped at `_SEARCH_LIMIT` (100) nodes — larger result sets
+  are silently truncated.
 
 ### Error handling
 
 "Error" must never look like "nothing to do" (critical for `--count` in status
-bars). All `gh` failures raise `GhError`; `fetch_prs()` raises if _any_ search
-query fails (partial results would silently hide PRs). Per-PR enrichment
-failures don't raise — they set `pr.enrich_error`, and the CLI prints a
-warning to stderr and exits non-zero.
+bars). All `gh` failures raise `GhError` — including per-qualifier search
+failures (partial results would silently hide PRs) and subprocess timeouts
+(60 s). The CLI prints the error to stderr and exits non-zero.
 
-### Attention logic (`enrich_pr`)
+### Attention logic (`_attention_reasons`)
 
 A non-draft PR needs attention when any of these hold:
 
-- **review** — your review is requested and still pending (no active approval /
-  changes-requested from you), or your prior review was dismissed. Conflicting
-  PRs are excluded (a review would be staled by the rebase).
+- **review** — your review is requested (or your prior review was dismissed)
+  and you have no active approval / changes-requested. Hidden when: the PR is
+  conflicting (a review would be staled by the rebase); the overall decision
+  is `CHANGES_REQUESTED` (author is reworking it); or it's `APPROVED` —
+  mergeable without you — unless you are personally on the
+  requested-reviewers list (`review_requested_explicitly`, i.e. requested as
+  a User, not through a Team).
 - **ready** — you authored it, it's `APPROVED`, CI is green (or none), and it's
   not conflicting.
 - **ci-failed** — you authored it and a check is failing.
@@ -65,8 +73,8 @@ A non-draft PR needs attention when any of these hold:
 ## Notes
 
 - `ruff` rule `E501` (line length) is not enforced.
-- `statusCheckRollup` mixes `CheckRun` (has `status`/`conclusion`) and
-  `StatusContext` (has `state`) entries — `_rollup_state()` normalizes both.
+- GraphQL `statusCheckRollup.state` is normalized via `_ROLLUP_STATE`; unknown
+  future states map to `PENDING` so "unrecognized" never counts as passing.
 - PR titles are attacker-controlled: they are stripped of control characters
-  at ingestion (`from_json`) and markup-escaped at render (`_title_cell`).
+  at ingestion (`from_graphql`) and markup-escaped at render (`_title_cell`).
   Keep both when touching those paths.

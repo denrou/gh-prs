@@ -17,25 +17,51 @@ class GhError(RuntimeError):
 # so a crafted PR title could otherwise inject raw terminal escape sequences.
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
-# gh check conclusions / statuses that mean a check has failed.
-_FAILED_STATES = {
-    "FAILURE",
-    "ERROR",
-    "TIMED_OUT",
-    "CANCELLED",
-    "ACTION_REQUIRED",
-    "STARTUP_FAILURE",
-    "STALE",
+# Seconds before a stuck gh subprocess is aborted (stalled network etc.).
+_GH_TIMEOUT = 60
+
+# GraphQL search filter per supported qualifier.
+_SEARCH_FILTERS = {
+    "author": "author:@me",
+    "review-requested": "review-requested:@me",
+    "assignee": "assignee:@me",
+    "involves": "involves:@me",
 }
-# States that mean a check is still running (not yet a pass or fail).
-_PENDING_STATES = {
-    "PENDING",
-    "IN_PROGRESS",
-    "QUEUED",
-    "WAITING",
-    "EXPECTED",
-    "REQUESTED",
+ALL_QUALIFIERS: tuple[str, ...] = tuple(_SEARCH_FILTERS)
+
+# GraphQL search returns at most 100 nodes per request; queries matching more
+# open PRs than this are silently truncated.
+_SEARCH_LIMIT = 100
+
+# GraphQL statusCheckRollup.state → our normalized checks_state. Unknown
+# states map to PENDING so "unrecognized" can never mean "pass".
+_ROLLUP_STATE = {
+    "SUCCESS": "SUCCESS",
+    "FAILURE": "FAILURE",
+    "ERROR": "FAILURE",
+    "PENDING": "PENDING",
+    "EXPECTED": "PENDING",
 }
+
+_PR_FRAGMENT = """
+fragment prFields on PullRequest {
+  number
+  title
+  url
+  updatedAt
+  createdAt
+  isDraft
+  reviewDecision
+  mergeable
+  repository { nameWithOwner }
+  author { login }
+  reviewRequests(first: 50) {
+    nodes { requestedReviewer { __typename ... on User { login } } }
+  }
+  latestReviews(first: 50) { nodes { author { login } state } }
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+}
+"""
 
 
 @dataclass
@@ -48,38 +74,59 @@ class PullRequest:
     updated_at: str
     created_at: str
     is_draft: bool
-    head_ref: str = ""
     review_decision: str = ""
     mergeable: str = ""
     # "SUCCESS" | "FAILURE" | "PENDING" | "" (no checks configured)
     checks_state: str = ""
+    # State of the current user's latest review ("APPROVED", "DISMISSED", …),
+    # or "" if they never reviewed.
+    my_review_state: str = ""
+    # True when the current user is personally on the requested-reviewers
+    # list (not merely through a team).
+    review_requested_explicitly: bool = False
     roles: set[str] = field(default_factory=set)
     # Reasons this PR needs the current user's attention (e.g. {"review", "ready"}).
-    # Empty until enrichment runs.
     attention_reasons: set[str] = field(default_factory=set)
-    # Non-empty if enrichment failed; the PR's decision/CI/mergeable fields are
-    # then unknown, which is different from legitimately empty.
-    enrich_error: str = ""
 
     @classmethod
-    def from_json(cls, data: dict) -> PullRequest:
-        repo = data.get("repository", {})
-        repo_name = (
-            repo.get("nameWithOwner", "") if isinstance(repo, dict) else str(repo)
+    def from_graphql(cls, node: dict, current_user: str = "") -> PullRequest:
+        commits = (node.get("commits") or {}).get("nodes") or [None]
+        rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup")
+        if rollup:
+            state = (rollup.get("state") or "").upper()
+            checks_state = _ROLLUP_STATE.get(state, "PENDING")
+        else:
+            checks_state = ""
+
+        # latestReviews already collapses to each reviewer's most recent review.
+        my_review_state = ""
+        for review in (node.get("latestReviews") or {}).get("nodes") or []:
+            if ((review or {}).get("author") or {}).get("login") == current_user:
+                my_review_state = review.get("state") or ""
+                break
+
+        # Only User reviewers carry a login in the fragment; a request routed
+        # through a Team therefore never matches.
+        requests = (node.get("reviewRequests") or {}).get("nodes") or []
+        explicit = bool(current_user) and any(
+            ((r or {}).get("requestedReviewer") or {}).get("login") == current_user
+            for r in requests
         )
-        author = data.get("author", {})
-        author_login = (
-            author.get("login", "") if isinstance(author, dict) else str(author)
-        )
+
         return cls(
-            number=data["number"],
-            repo=repo_name,
-            title=_CONTROL_CHARS.sub("", data["title"]),
-            author=author_login,
-            url=data.get("url", ""),
-            updated_at=data.get("updatedAt", ""),
-            created_at=data.get("createdAt", ""),
-            is_draft=data.get("isDraft", False),
+            number=node["number"],
+            repo=(node.get("repository") or {}).get("nameWithOwner", ""),
+            title=_CONTROL_CHARS.sub("", node["title"]),
+            author=(node.get("author") or {}).get("login", ""),
+            url=node.get("url", ""),
+            updated_at=node.get("updatedAt", ""),
+            created_at=node.get("createdAt", ""),
+            is_draft=node.get("isDraft", False),
+            review_decision=node.get("reviewDecision") or "",
+            mergeable=node.get("mergeable") or "",
+            checks_state=checks_state,
+            my_review_state=my_review_state,
+            review_requested_explicitly=explicit,
         )
 
     @property
@@ -99,76 +146,86 @@ class PullRequest:
         return f"{self.repo}#{self.number}"
 
     def needs_attention(self) -> bool:
-        """Return True if this PR requires action from the current user.
-
-        Returns False until enrichment has run (conservative default).
-        """
+        """Return True if this PR requires action from the current user."""
         return bool(self.attention_reasons)
 
 
-def _run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run_gh(*args: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["gh", *args],
             capture_output=True,
             text=True,
-            check=check,
+            check=False,
+            timeout=_GH_TIMEOUT,
         )
     except FileNotFoundError:
         raise GhError(
             "gh CLI not found. Install it from https://cli.github.com/"
         ) from None
+    except subprocess.TimeoutExpired:
+        raise GhError(f"gh timed out after {_GH_TIMEOUT}s (network stalled?)") from None
 
 
-def _search_prs(qualifier: str) -> list[PullRequest]:
-    """Run a single gh search prs query."""
-    result = _run_gh(
-        "search",
-        "prs",
-        f"--{qualifier}=@me",
-        "--state=open",
-        "--json",
-        "number,title,repository,author,url,updatedAt,createdAt,isDraft",
-        "--limit",
-        "200",
-        check=False,
+def _build_query(qualifier: str) -> str:
+    """Build the GraphQL query for one qualifier's search."""
+    return (
+        "query {\n"
+        "  viewer { login }\n"
+        f'  results: search(query: "is:pr is:open archived:false '
+        f'{_SEARCH_FILTERS[qualifier]}", type: ISSUE, first: {_SEARCH_LIMIT}) '
+        "{ nodes { ...prFields } }\n"
+        "}\n"
+        f"{_PR_FRAGMENT}"
     )
+
+
+def _search(qualifier: str) -> tuple[str, list[dict]]:
+    """Run one qualifier's GraphQL search; return (viewer_login, PR nodes)."""
+    result = _run_gh("api", "graphql", "-f", f"query={_build_query(qualifier)}")
     if result.returncode != 0:
-        raise GhError(f"Search '--{qualifier}=@me' failed: {result.stderr.strip()}")
-    raw = result.stdout.strip()
-    if not raw:
-        return []
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise GhError(f"Search '{qualifier}' failed: {detail}")
     try:
-        return [PullRequest.from_json(item) for item in json.loads(raw)]
-    except (json.JSONDecodeError, KeyError) as e:
-        raise GhError(f"Failed to parse '--{qualifier}=@me' PR data: {e}") from e
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise GhError(f"Invalid JSON from '{qualifier}' search: {e}") from e
+    if payload.get("errors"):
+        messages = "; ".join(
+            err.get("message", "unknown error") for err in payload["errors"]
+        )
+        raise GhError(f"Search '{qualifier}' returned errors: {messages}")
+    data = payload.get("data") or {}
+    viewer = (data.get("viewer") or {}).get("login", "")
+    nodes = (data.get("results") or {}).get("nodes") or []
+    return viewer, nodes
 
 
 def fetch_prs(qualifiers: list[str] | None = None) -> list[PullRequest]:
-    """Fetch open PRs the current user is involved with.
+    """Fetch open PRs the current user is involved with, fully enriched.
 
-    ``qualifiers`` selects which ``gh search prs`` filters to run (``author``,
-    ``review-requested``, ``assignee``, ``involves``). Defaults to all four.
+    Runs one ``gh api graphql`` search per qualifier (``author``,
+    ``review-requested``, ``assignee``, ``involves`` — defaults to all four)
+    in parallel; GitHub executes aliased searches sequentially, so separate
+    requests cost the slowest search instead of the sum. Each search is
+    capped at 100 PRs and fetches everything in one shot: review decision,
+    mergeability, CI rollup, latest reviews, and review requests. Archived
+    repos are excluded by the search filter. Each PR's ``attention_reasons``
+    is computed before returning.
 
-    Raises ``GhError`` if any search query fails: a partial result (e.g. a
-    rate-limited ``review-requested`` query) would silently hide PRs, and
-    "error" must never look like "nothing to do".
+    Raises ``GhError`` if any search fails: a partial result would silently
+    hide PRs, and "error" must never look like "nothing to do".
     """
     if qualifiers is None:
-        qualifiers = ["author", "review-requested", "assignee", "involves"]
-    seen: dict[str, PullRequest] = {}
+        qualifiers = list(ALL_QUALIFIERS)
+    results: dict[str, tuple[str, list[dict]]] = {}
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=max(len(qualifiers), 1)) as pool:
-        futures = {pool.submit(_search_prs, q): q for q in qualifiers}
+        futures = {pool.submit(_search, q): q for q in qualifiers}
         for future in as_completed(futures):
             qualifier = futures[future]
             try:
-                for pr in future.result():
-                    if pr.id in seen:
-                        seen[pr.id].roles.add(qualifier)
-                    else:
-                        pr.roles.add(qualifier)
-                        seen[pr.id] = pr
+                results[qualifier] = future.result()
             except GhError as exc:
                 errors.append(str(exc))
     if errors:
@@ -176,113 +233,34 @@ def fetch_prs(qualifiers: list[str] | None = None) -> list[PullRequest]:
             "Some PR searches failed; results would be incomplete:\n  "
             + "\n  ".join(errors)
         )
-    # Drop PRs from archived repos. Check unique repos in parallel.
-    repos = {pr.repo for pr in seen.values()}
-    if not repos:
-        return []
-    with ThreadPoolExecutor(max_workers=min(len(repos), 8)) as pool:
-        archived = {
-            repo
-            for repo, is_archived in pool.map(_is_repo_archived, repos)
-            if is_archived
-        }
-    return sorted(
-        (pr for pr in seen.values() if pr.repo not in archived),
-        key=lambda p: p.updated_at,
-        reverse=True,
-    )
+
+    viewer = next((login for login, _ in results.values() if login), "")
+    seen: dict[str, PullRequest] = {}
+    # Iterate in qualifier order (not completion order) for deterministic roles.
+    for qualifier in qualifiers:
+        _, nodes = results[qualifier]
+        for node in nodes:
+            if not node:
+                continue
+            try:
+                pr = PullRequest.from_graphql(node, viewer)
+            except (KeyError, TypeError) as e:
+                raise GhError(f"Failed to parse PR data: {e!r}") from e
+            if pr.id in seen:
+                seen[pr.id].roles.add(qualifier)
+            else:
+                pr.roles.add(qualifier)
+                seen[pr.id] = pr
+
+    for pr in seen.values():
+        pr.attention_reasons = _attention_reasons(pr)
+    return sorted(seen.values(), key=lambda p: p.updated_at, reverse=True)
 
 
-def _is_repo_archived(repo: str) -> tuple[str, bool]:
-    result = _run_gh("repo", "view", repo, "--json", "isArchived", check=False)
-    if result.returncode != 0 or not result.stdout.strip():
-        return repo, False
-    try:
-        return repo, json.loads(result.stdout).get("isArchived", False)
-    except json.JSONDecodeError:
-        return repo, False
-
-
-def get_current_user() -> str:
-    """Return the login of the authenticated GitHub user.
-
-    Raises ``GhError`` on failure: an empty login would silently break the
-    "did I already review this?" logic in ``enrich_pr``, and gh's own stderr
-    (e.g. "run gh auth login") is the actionable message the user needs.
-    """
-    result = _run_gh("api", "user", "--jq", ".login", check=False)
-    if result.returncode != 0:
-        raise GhError(f"Could not resolve GitHub user: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-def _rollup_state(rollup: list[dict]) -> str:
-    """Collapse a statusCheckRollup list into SUCCESS / FAILURE / PENDING / "".
-
-    An empty rollup ("") means no checks are configured on the PR.
-    """
-    if not rollup:
-        return ""
-    has_pending = False
-    for check in rollup:
-        # StatusContext exposes `state`; CheckRun exposes `status` + `conclusion`.
-        state = check.get("state")
-        if state:
-            resolved = state.upper()
-        elif (check.get("status") or "").upper() != "COMPLETED":
-            resolved = "PENDING"
-        else:
-            resolved = (check.get("conclusion") or "").upper() or "PENDING"
-        if resolved in _FAILED_STATES:
-            return "FAILURE"
-        if resolved in _PENDING_STATES or resolved == "":
-            has_pending = True
-    return "PENDING" if has_pending else "SUCCESS"
-
-
-def enrich_pr(pr: PullRequest, current_user: str = "") -> None:
-    """Fetch review decision, mergeability, CI status, and reviews for one PR.
-
-    Mutates ``pr`` in place and computes ``attention_reasons``. Drafts get
-    enriched fields but never attention reasons. On failure, sets
-    ``pr.enrich_error`` instead of raising so one bad PR doesn't sink the run.
-    """
-    try:
-        detail = _run_gh(
-            "pr",
-            "view",
-            str(pr.number),
-            "--repo",
-            pr.repo,
-            "--json",
-            "headRefName,reviewDecision,reviews,mergeable,statusCheckRollup",
-            check=False,
-        )
-    except GhError as exc:
-        pr.enrich_error = str(exc)
-        return
-    if detail.returncode != 0 or not detail.stdout.strip():
-        pr.enrich_error = detail.stderr.strip() or "gh pr view returned no output"
-        return
-    try:
-        info = json.loads(detail.stdout)
-    except json.JSONDecodeError as exc:
-        pr.enrich_error = f"invalid JSON from gh pr view: {exc}"
-        return
-    pr.head_ref = info.get("headRefName", "")
-    pr.review_decision = info.get("reviewDecision", "") or ""
-    pr.mergeable = info.get("mergeable", "") or ""
-    pr.checks_state = _rollup_state(info.get("statusCheckRollup", []) or [])
-    pr.attention_reasons = _attention_reasons(pr, info.get("reviews", []), current_user)
-
-
-def _attention_reasons(
-    pr: PullRequest, reviews: list[dict], current_user: str
-) -> set[str]:
+def _attention_reasons(pr: PullRequest) -> set[str]:
     """Compute why an enriched PR needs the current user's attention.
 
-    Pure function of the enriched ``pr`` fields, its review history, and the
-    current user's login. Drafts never need attention.
+    Pure function of the PR's enriched fields. Drafts never need attention.
     """
     if pr.is_draft:
         return set()
@@ -290,24 +268,21 @@ def _attention_reasons(
     reasons: set[str] = set()
 
     # --- PRs where I am asked to review ---
-    my_reviews = [
-        r for r in reviews if (r.get("author") or {}).get("login") == current_user
-    ]
-    # Only the most recent review matters: a later APPROVED supersedes an earlier
-    # DISMISSED, so checking any() over all reviews would give false positives.
-    latest_my_review = (
-        max(my_reviews, key=lambda r: r.get("submittedAt", "")) if my_reviews else None
-    )
-    latest_state = latest_my_review.get("state") if latest_my_review else None
-    user_has_active_review = latest_state in ("APPROVED", "CHANGES_REQUESTED")
-    dismissed = latest_state == "DISMISSED"
-    review_req = (
-        "review-requested" in pr.roles
-        and pr.review_decision in ("REVIEW_REQUIRED", "")
-        and not user_has_active_review
-    )
-    # Skip conflicting PRs: a review would be staled once the author rebases.
-    if (review_req or dismissed) and pr.mergeable != "CONFLICTING":
+    has_active_review = pr.my_review_state in ("APPROVED", "CHANGES_REQUESTED")
+    dismissed = pr.my_review_state == "DISMISSED"
+    wants_my_review = (
+        "review-requested" in pr.roles or dismissed
+    ) and not has_active_review
+    if (
+        wants_my_review
+        # A review would be staled once the author rebases.
+        and pr.mergeable != "CONFLICTING"
+        # The author is already reworking the PR.
+        and pr.review_decision != "CHANGES_REQUESTED"
+        # Approved PRs are mergeable without me — unless I'm personally on the
+        # requested-reviewers list (not just through a team), my review is moot.
+        and (pr.review_decision != "APPROVED" or pr.review_requested_explicitly)
+    ):
         reasons.add("review")
 
     # --- PRs I authored that need my action ---

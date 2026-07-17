@@ -5,18 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
 from gh_prs.gh import (
+    ALL_QUALIFIERS,
     GhError,
     PullRequest,
-    enrich_pr,
     fetch_prs,
-    get_current_user,
 )
 
 # Grouped sections for the default (attention) view, in display order.
@@ -41,14 +39,6 @@ _CHECKS_STYLE = {
     "PENDING": ("● running", "yellow"),
     "": ("—", "dim"),
 }
-
-
-def _enrich_all(prs: list[PullRequest], user: str) -> None:
-    """Enrich every PR in parallel (each call is an independent gh subprocess)."""
-    if not prs:
-        return
-    with ThreadPoolExecutor(max_workers=min(len(prs), 8)) as pool:
-        list(pool.map(lambda pr: enrich_pr(pr, user), prs))
 
 
 def _num_cell(pr: PullRequest) -> str:
@@ -154,7 +144,6 @@ def _to_dict(pr: PullRequest) -> dict:
         "mergeable": pr.mergeable,
         "roles": sorted(pr.roles),
         "attentionReasons": sorted(pr.attention_reasons),
-        "enrichError": pr.enrich_error,
         "updatedAt": pr.updated_at,
         "createdAt": pr.created_at,
     }
@@ -195,33 +184,16 @@ def main() -> int:
     elif args.review:
         qualifiers = ["review-requested"]
     elif args.all:
-        qualifiers = ["author", "review-requested", "assignee", "involves"]
+        qualifiers = list(ALL_QUALIFIERS)
     else:
         qualifiers = ["author", "review-requested"]
 
     try:
         with err.status("Fetching pull requests…", spinner="dots"):
-            user = get_current_user()
             prs = fetch_prs(qualifiers)
-        with err.status(f"Loading details for {len(prs)} PRs…", spinner="dots"):
-            _enrich_all(prs, user)
     except GhError as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
-
-    # Enrichment failures mean some PRs have unknown state and may be missing
-    # from the attention view — warn and exit non-zero so "error" never looks
-    # like "nothing to do" (crucial for --count in status bars).
-    failed = [pr for pr in prs if pr.enrich_error]
-    exit_code = 0
-    if failed:
-        err.print(
-            f"[yellow]Warning:[/yellow] could not load details for "
-            f"{len(failed)} of {len(prs)} PRs (rate limited?):"
-        )
-        for pr in failed:
-            err.print(f"  [dim]{pr.id}: {escape(pr.enrich_error)}[/dim]")
-        exit_code = 1
 
     if args.count:
         # In the default view "count" means PRs needing attention; the explicit
@@ -229,11 +201,11 @@ def main() -> int:
         default_view = not (args.created or args.review or args.all)
         n = sum(pr.needs_attention() for pr in prs) if default_view else len(prs)
         print(n)
-        return exit_code
+        return 0
 
     if args.json:
         console.print_json(json.dumps([_to_dict(pr) for pr in prs]))
-        return exit_code
+        return 0
 
     if args.created:
         _render_list(console, prs, title="PRs you created", style="bold blue")
@@ -244,7 +216,7 @@ def main() -> int:
     else:
         _render_attention(console, prs)
 
-    return exit_code
+    return 0
 
 
 if __name__ == "__main__":

@@ -5,9 +5,13 @@ the `gh` CLI. No TUI — just readable, colored, grouped output.
 
 By default it shows only the PRs that need your attention:
 
-- **Needs your review** — PRs where your review is requested and still pending
-  (drafts and conflicting PRs excluded — a review would be staled by the rebase).
-- **Ready to ship** — PRs you created that are approved, with CI green and no conflicts.
+- **Needs your review** — PRs where your review is requested and still needed:
+  once the PR is approved (mergeable without you) it is hidden unless you are
+  personally on the requested-reviewers list (not just through a team), and it
+  is also hidden while changes are requested (the author is reworking it).
+  Drafts and conflicting PRs are excluded — a review would be staled by the rebase.
+- **Ready to ship** — PRs you created that are approved, with CI green (or no
+  checks) and no conflicts.
 - **CI failed** — PRs you created where a check is failing.
 - **Conflicts to resolve** — PRs you created that have merge conflicts.
 
@@ -43,5 +47,14 @@ gh prs -c/--created # every open PR you created
 gh prs -r/--review  # every PR awaiting your review
 gh prs -a/--all     # every PR you are involved with
 gh prs --json       # raw JSON (for scripting)
+gh prs --count      # print only the PR count for the selected view
+                    # (attention count by default; handy for status bars)
 gh prs --no-color   # disable colored output
 ```
+
+`--count` exits non-zero when fetching fails, so status-bar scripts can tell
+"no PRs" apart from "the lookup broke".
+
+For status bars, prefer the `uv tool install` binary (`~/.local/bin/gh-prs`)
+over `uv run` inside the repo — it skips ~250 ms of project resolution per
+invocation.

@@ -5,7 +5,7 @@ import sys
 import pytest
 
 from gh_prs import cli
-from gh_prs.gh import PullRequest
+from gh_prs.gh import GhError, PullRequest
 
 
 def _pr(number: int, *, attention: set[str] | None = None, **overrides) -> PullRequest:
@@ -26,16 +26,14 @@ def _pr(number: int, *, attention: set[str] | None = None, **overrides) -> PullR
 
 @pytest.fixture
 def fake_backend(monkeypatch):
-    """Stub out the gh-backed functions; records the qualifiers requested."""
+    """Stub out fetch_prs; records the qualifiers requested."""
     calls: dict = {"qualifiers": None, "prs": []}
 
     def fake_fetch(qualifiers=None):
         calls["qualifiers"] = qualifiers
         return calls["prs"]
 
-    monkeypatch.setattr(cli, "get_current_user", lambda: "me")
     monkeypatch.setattr(cli, "fetch_prs", fake_fetch)
-    monkeypatch.setattr(cli, "enrich_pr", lambda pr, user: None)
     return calls
 
 
@@ -92,22 +90,9 @@ class TestCountSemantics:
 
 
 class TestFailureSurfacing:
-    def test_enrich_failure_warns_and_exits_nonzero(
-        self, monkeypatch, fake_backend, capsys
-    ):
-        failed = _pr(1)
-        failed.enrich_error = "boom"
-        fake_backend["prs"] = [failed, _pr(2, attention={"review"})]
-        assert _run(monkeypatch, ["--count"]) == 1
-        captured = capsys.readouterr()
-        assert captured.out.strip() == "1"  # count still printed
-        assert "could not load details for 1 of 2" in captured.err
-
     def test_fetch_error_prints_error_and_exits_nonzero(
         self, monkeypatch, fake_backend, capsys
     ):
-        from gh_prs.gh import GhError
-
         def boom(qualifiers=None):
             raise GhError("token expired")
 
@@ -120,11 +105,10 @@ class TestEscaping:
     def test_title_markup_is_escaped(self):
         pr = _pr(1, title="[link=https://evil.example]click[/link]")
         cell = cli._title_cell(pr)
-        assert "[link=" not in cell.replace("\\[link=", "")
         # Renders as literal text: escape() backslash-escapes the brackets.
         assert cell.startswith("\\[link=")
 
-    def test_unmatched_closing_tag_does_not_crash_render(self, capsys):
+    def test_unmatched_closing_tag_does_not_crash_render(self):
         from rich.console import Console
 
         pr = _pr(1, title="broken [/bold] title", attention={"review"})
