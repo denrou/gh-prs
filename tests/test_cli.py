@@ -29,7 +29,7 @@ def fake_backend(monkeypatch):
     """Stub out fetch_prs; records the qualifiers requested."""
     calls: dict = {"qualifiers": None, "prs": []}
 
-    def fake_fetch(qualifiers=None):
+    def fake_fetch(qualifiers=None, on_warning=None):
         calls["qualifiers"] = qualifiers
         return calls["prs"]
 
@@ -93,7 +93,7 @@ class TestFailureSurfacing:
     def test_fetch_error_prints_error_and_exits_nonzero(
         self, monkeypatch, fake_backend, capsys
     ):
-        def boom(qualifiers=None):
+        def boom(qualifiers=None, on_warning=None):
             raise GhError("token expired")
 
         monkeypatch.setattr(cli, "fetch_prs", boom)

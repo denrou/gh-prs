@@ -1,6 +1,12 @@
-"""Tests for the pure logic in gh_prs.gh: attention reasons and GraphQL parsing."""
+"""Tests for gh_prs.gh: attention reasons, GraphQL parsing, and fetch orchestration."""
 
-from gh_prs.gh import PullRequest, _attention_reasons
+import json
+import subprocess
+
+import pytest
+
+from gh_prs import gh
+from gh_prs.gh import GhError, PullRequest, _attention_reasons, fetch_prs
 
 
 def _pr(**overrides) -> PullRequest:
@@ -109,16 +115,51 @@ class TestReviewReason:
 
 class TestAuthorReasons:
     def test_approved_green_ci_is_ready(self):
-        pr = _pr(roles={"author"}, review_decision="APPROVED", checks_state="SUCCESS")
+        pr = _pr(
+            roles={"author"},
+            review_decision="APPROVED",
+            checks_state="SUCCESS",
+            mergeable="MERGEABLE",
+        )
         assert _attention_reasons(pr) == {"ready"}
 
     def test_approved_without_checks_is_ready(self):
-        pr = _pr(roles={"author"}, review_decision="APPROVED", checks_state="")
+        pr = _pr(
+            roles={"author"},
+            review_decision="APPROVED",
+            checks_state="",
+            mergeable="MERGEABLE",
+        )
         assert _attention_reasons(pr) == {"ready"}
 
     def test_approved_with_pending_checks_is_not_ready(self):
-        pr = _pr(roles={"author"}, review_decision="APPROVED", checks_state="PENDING")
+        pr = _pr(
+            roles={"author"},
+            review_decision="APPROVED",
+            checks_state="PENDING",
+            mergeable="MERGEABLE",
+        )
         assert _attention_reasons(pr) == set()
+
+    def test_unknown_mergeability_is_not_ready(self):
+        # GitHub returns UNKNOWN while recomputing mergeability (e.g. right
+        # after a push); "don't know" must never read as "no conflict".
+        pr = _pr(
+            roles={"author"},
+            review_decision="APPROVED",
+            checks_state="SUCCESS",
+            mergeable="UNKNOWN",
+        )
+        assert _attention_reasons(pr) == set()
+
+    def test_unknown_mergeability_still_shows_review(self):
+        # ...but a review request shouldn't vanish while GitHub churns.
+        pr = _pr(
+            roles={"review-requested"},
+            review_decision="REVIEW_REQUIRED",
+            mergeable="UNKNOWN",
+        )
+        assert _attention_reasons(pr) == {"review"}
 
     def test_failing_ci_flagged(self):
         pr = _pr(roles={"author"}, checks_state="FAILURE")
@@ -219,6 +260,216 @@ class TestFromGraphql:
         pr = PullRequest.from_graphql(_node(author=None), "me")
         assert pr.author == ""
 
+    def test_missing_commits_block_is_pending_not_no_checks(self):
+        # Shape drift ("we don't know") must not read as "no checks
+        # configured" (which counts toward ready).
+        node = _node()
+        del node["commits"]
+        assert PullRequest.from_graphql(node, "me").checks_state == "PENDING"
+
+    def test_null_repository_raises(self):
+        # repository keys de-duplication; a missing one must fail parsing,
+        # not silently merge distinct PRs under the same id.
+        with pytest.raises((KeyError, TypeError)):
+            PullRequest.from_graphql(_node(repository=None), "me")
+
     def test_control_characters_stripped_from_title(self):
-        node = _node(title="safe\x1b]0;evil\x07 title\x00")
-        assert PullRequest.from_graphql(node, "me").title == "safe]0;evil title"
+        # Includes ESC (C0), DEL, and a C1 control (U+009B, one-char CSI).
+        node = _node(title="safe\x1b]0;evil\x07 title\x00\x9b31m")
+        assert PullRequest.from_graphql(node, "me").title == "safe]0;evil title31m"
+
+
+def _completed(
+    stdout: str, returncode: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=["gh"], returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+def _search_payload(
+    nodes: list, viewer: str = "me", issue_count: int | None = None
+) -> str:
+    return json.dumps(
+        {
+            "data": {
+                "viewer": {"login": viewer},
+                "results": {
+                    "issueCount": len(nodes) if issue_count is None else issue_count,
+                    "nodes": nodes,
+                },
+            }
+        }
+    )
+
+
+class TestSearch:
+    """_search / _graphql response-envelope validation (mocked _run_gh)."""
+
+    def test_happy_path(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed(_search_payload([_node()]))
+        )
+        viewer, nodes, count = gh._search("author")
+        assert viewer == "me"
+        assert len(nodes) == 1
+        assert count == 1
+
+    def test_nonzero_exit_raises_with_context(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed("", returncode=1, stderr="401")
+        )
+        with pytest.raises(GhError, match="Search 'author'.*401"):
+            gh._search("author")
+
+    def test_invalid_json_raises(self, monkeypatch):
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed("not json"))
+        with pytest.raises(GhError, match="invalid JSON"):
+            gh._search("author")
+
+    def test_non_object_payload_raises(self, monkeypatch):
+        # json.loads guarantees valid JSON, not a JSON object.
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed("null"))
+        with pytest.raises(GhError, match="not a JSON object"):
+            gh._search("author")
+
+    def test_graphql_errors_array_raises(self, monkeypatch):
+        payload = json.dumps({"data": None, "errors": [{"message": "rate limited"}]})
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="rate limited"):
+            gh._search("author")
+
+    def test_missing_data_block_raises(self, monkeypatch):
+        # An envelope without data must be an error, not "zero PRs".
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed('{"data": null}'))
+        with pytest.raises(GhError, match="no data block"):
+            gh._search("author")
+
+    def test_missing_results_block_raises(self, monkeypatch):
+        payload = json.dumps({"data": {"viewer": {"login": "me"}}})
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="no results block"):
+            gh._search("author")
+
+
+class TestFetchPrs:
+    """fetch_prs orchestration (mocked _search)."""
+
+    @staticmethod
+    def _fake_search(responses: dict):
+        def fake(qualifier: str):
+            result = responses[qualifier]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return fake
+
+    def test_dedup_merges_roles_and_computes_attention(self, monkeypatch):
+        shared = _node(number=1, reviewDecision="REVIEW_REQUIRED")
+        authored = _node(number=2, updatedAt="2026-07-16T12:00:00Z")
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {
+                    "author": ("me", [shared, authored], 2),
+                    # The same PR also comes back from the second search,
+                    # plus a null node that must be skipped.
+                    "review-requested": ("me", [None, shared], 1),
+                }
+            ),
+        )
+        prs = fetch_prs(["author", "review-requested"])
+        assert len(prs) == 2
+        by_number = {pr.number: pr for pr in prs}
+        assert by_number[1].roles == {"author", "review-requested"}
+        assert by_number[2].roles == {"author"}
+        # attention_reasons is computed (PR 1 is review-requested + pending
+        # — but "author" role comes from the author search: you can't review
+        # your own PR in reality; here it just proves the wiring runs).
+        assert by_number[1].attention_reasons == {"review"}
+        # Sorted newest-updated first: PR 2 (07-16) before PR 1 (07-15).
+        assert [pr.number for pr in prs] == [2, 1]
+
+    def test_viewer_propagates_from_any_search(self, monkeypatch):
+        node = _node(
+            latestReviews={"nodes": [{"author": {"login": "me"}, "state": "APPROVED"}]}
+        )
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {"author": ("", [], 0), "review-requested": ("me", [node], 1)}
+            ),
+        )
+        prs = fetch_prs(["author", "review-requested"])
+        assert prs[0].my_review_state == "APPROVED"
+
+    def test_one_failed_search_fails_the_whole_fetch(self, monkeypatch):
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {
+                    "author": ("me", [_node()], 1),
+                    "review-requested": GhError(
+                        "Search 'review-requested' failed: 502"
+                    ),
+                }
+            ),
+        )
+        with pytest.raises(GhError, match="(?s)incomplete.*review-requested"):
+            fetch_prs(["author", "review-requested"])
+
+    def test_multiple_failures_are_aggregated(self, monkeypatch):
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {
+                    "author": GhError("Search 'author' failed: 502"),
+                    "review-requested": GhError(
+                        "Search 'review-requested' failed: 401"
+                    ),
+                }
+            ),
+        )
+        with pytest.raises(GhError) as excinfo:
+            fetch_prs(["author", "review-requested"])
+        assert "author" in str(excinfo.value)
+        assert "review-requested" in str(excinfo.value)
+
+    def test_unexpected_exception_is_aggregated_not_raised_raw(self, monkeypatch):
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search({"author": AttributeError("shape drift")}),
+        )
+        with pytest.raises(GhError, match="crashed.*shape drift"):
+            fetch_prs(["author"])
+
+    def test_missing_viewer_raises(self, monkeypatch):
+        # An empty login would silently disable review-state classification.
+        monkeypatch.setattr(
+            gh, "_search", self._fake_search({"author": ("", [_node()], 1)})
+        )
+        with pytest.raises(GhError, match="authenticated user"):
+            fetch_prs(["author"])
+
+    def test_truncation_triggers_warning(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_search", self._fake_search({"author": ("me", [_node()], 250)})
+        )
+        warnings: list[str] = []
+        fetch_prs(["author"], on_warning=warnings.append)
+        assert warnings and "250" in warnings[0]
+
+    def test_malformed_node_raises_gherror(self, monkeypatch):
+        bad = _node()
+        del bad["number"]
+        monkeypatch.setattr(
+            gh, "_search", self._fake_search({"author": ("me", [bad], 1)})
+        )
+        with pytest.raises(GhError, match="Failed to parse PR data"):
+            fetch_prs(["author"])

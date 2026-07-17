@@ -188,12 +188,18 @@ def main() -> int:
     else:
         qualifiers = ["author", "review-requested"]
 
+    def warn(msg: str) -> None:
+        err.print(f"[yellow]Warning:[/yellow] {msg}")
+
     try:
         with err.status("Fetching pull requests…", spinner="dots"):
-            prs = fetch_prs(qualifiers)
+            prs = fetch_prs(qualifiers, on_warning=warn)
     except GhError as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
+    except KeyboardInterrupt:
+        err.print("[dim]Interrupted.[/dim]")
+        return 130
 
     if args.count:
         # In the default view "count" means PRs needing attention; the explicit
