@@ -14,6 +14,7 @@ from gh_prs.gh import (
     ALL_QUALIFIERS,
     GhError,
     PullRequest,
+    count_prs,
     fetch_prs,
 )
 
@@ -191,15 +192,31 @@ def main() -> int:
     def warn(msg: str) -> None:
         err.print(f"[yellow]Warning:[/yellow] {msg}")
 
+    # Count-only fast path: a single-qualifier count (-c/-r with --count)
+    # needs no node data and no cross-search de-duplication — a count-only
+    # query answers it in a fraction of a full search's time, and the count
+    # is exact even beyond the 100-node cap. The default view's count still
+    # needs full data (attention reasons); -a needs de-duplication.
+    fast_count = args.count and len(qualifiers) == 1
+
+    prs: list[PullRequest] = []
+    count = 0
     try:
         with err.status("Fetching pull requests…", spinner="dots"):
-            prs = fetch_prs(qualifiers, on_warning=warn)
+            if fast_count:
+                count = count_prs(qualifiers[0])
+            else:
+                prs = fetch_prs(qualifiers, on_warning=warn)
     except GhError as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
     except KeyboardInterrupt:
         err.print("[dim]Interrupted.[/dim]")
         return 130
+
+    if fast_count:
+        print(count)
+        return 0
 
     if args.count:
         # In the default view "count" means PRs needing attention; the explicit

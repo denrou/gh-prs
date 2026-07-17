@@ -232,6 +232,38 @@ def _graphql(context: str, *args: str) -> dict:
     return data
 
 
+_COUNT_QUERY = """
+query($q: String!) {
+  results: search(query: $q, type: ISSUE, first: 1) { issueCount }
+}
+"""
+
+
+def count_prs(qualifier: str) -> int:
+    """Return the exact number of open PRs matching one qualifier's search.
+
+    A count-only query skips node hydration, which is what dominates search
+    cost — measured ~0.3s versus 2s+ for a full search. Only valid for a
+    single qualifier: counts across several searches can't be de-duplicated.
+    ``issueCount`` is exact even beyond the ``_SEARCH_LIMIT`` node cap.
+
+    Raises ``GhError`` on any failure.
+    """
+    data = _graphql(
+        f"Count '{qualifier}'",
+        "-f",
+        f"query={_COUNT_QUERY}",
+        "-f",
+        f"q={_search_string(qualifier)}",
+    )
+    results = data.get("results")
+    if not isinstance(results, dict) or "issueCount" not in results:
+        raise GhError(
+            f"Count '{qualifier}': response has no issueCount (unexpected shape)"
+        )
+    return int(results["issueCount"] or 0)
+
+
 def _search(qualifier: str) -> tuple[str, list[dict], int]:
     """Run one qualifier's search; return (viewer_login, PR nodes, issue_count).
 

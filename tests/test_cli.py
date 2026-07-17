@@ -81,12 +81,39 @@ class TestCountSemantics:
         assert _run(monkeypatch, ["--count"]) == 0
         assert capsys.readouterr().out.strip() == "2"
 
-    def test_explicit_view_count_counts_all_prs(
+    def test_single_qualifier_count_uses_fast_path(
         self, monkeypatch, fake_backend, capsys
     ):
-        fake_backend["prs"] = [_pr(1, attention={"review"}), _pr(2), _pr(3)]
+        # -c/-r with --count skip node hydration entirely via count_prs.
+        counted: list[str] = []
+
+        def fake_count(qualifier):
+            counted.append(qualifier)
+            return 3
+
+        monkeypatch.setattr(cli, "count_prs", fake_count)
         assert _run(monkeypatch, ["-c", "--count"]) == 0
         assert capsys.readouterr().out.strip() == "3"
+        assert counted == ["author"]
+        assert fake_backend["qualifiers"] is None  # fetch_prs never called
+
+    def test_all_view_count_still_deduplicates_via_fetch(
+        self, monkeypatch, fake_backend, capsys
+    ):
+        # -a spans several searches whose union must be de-duplicated, so it
+        # keeps the full fetch path.
+        fake_backend["prs"] = [_pr(1), _pr(2), _pr(3)]
+        assert _run(monkeypatch, ["-a", "--count"]) == 0
+        assert capsys.readouterr().out.strip() == "3"
+        assert fake_backend["qualifiers"] is not None
+
+    def test_fast_count_error_exits_nonzero(self, monkeypatch, fake_backend, capsys):
+        def boom(qualifier):
+            raise GhError("rate limited")
+
+        monkeypatch.setattr(cli, "count_prs", boom)
+        assert _run(monkeypatch, ["-r", "--count"]) == 1
+        assert "rate limited" in capsys.readouterr().err
 
 
 class TestFailureSurfacing:

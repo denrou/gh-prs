@@ -352,6 +352,19 @@ class TestSearch:
             gh._search("author")
 
 
+class TestCountPrs:
+    def test_returns_issue_count(self, monkeypatch):
+        payload = json.dumps({"data": {"results": {"issueCount": 143}}})
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        assert gh.count_prs("author") == 143
+
+    def test_missing_issue_count_raises(self, monkeypatch):
+        payload = json.dumps({"data": {"results": {}}})
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="no issueCount"):
+            gh.count_prs("author")
+
+
 class TestFetchPrs:
     """fetch_prs orchestration (mocked _search)."""
 
