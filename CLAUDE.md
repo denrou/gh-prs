@@ -24,8 +24,6 @@ Two-module design inside `gh_prs/`:
   `fetch_prs()`, `count_prs()`, `ALL_QUALIFIERS`, and the `GhError` exception.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
-- **`app.py`** — Backwards-compatible shim re-exporting `cli.main` (the old
-  Textual TUI was removed in 0.3.0).
 
 ### Loading (single GraphQL round-trip per qualifier)
 
