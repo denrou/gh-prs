@@ -8,9 +8,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from gh_prs.gh import (
+    GhError,
     PullRequest,
     enrich_pr,
     fetch_prs,
@@ -67,7 +69,9 @@ def _checks_cell(pr: PullRequest) -> str:
 
 def _title_cell(pr: PullRequest) -> str:
     prefix = "[dim](draft)[/dim] " if pr.is_draft else ""
-    return f"{prefix}{pr.title}"
+    # PR titles are attacker-controlled; escape so rich renders them as literal
+    # text instead of markup (e.g. a [link=...] tag would become a real hyperlink).
+    return f"{prefix}{escape(pr.title)}"
 
 
 def _render_section(
@@ -88,7 +92,7 @@ def _render_section(
     for pr in prs:
         row = [pr.repo_short, _num_cell(pr), _title_cell(pr)]
         if show_author:
-            row.append(pr.author)
+            row.append(escape(pr.author))
         row.append(pr.updated_date)
         table.add_row(*row)
     console.print(f"[{style}]{title}[/{style}] [dim]({len(prs)})[/dim]")
@@ -128,7 +132,7 @@ def _render_list(
             pr.repo_short,
             _num_cell(pr),
             _title_cell(pr),
-            pr.author,
+            escape(pr.author),
             _review_cell(pr),
             _checks_cell(pr),
             pr.updated_date,
@@ -150,6 +154,7 @@ def _to_dict(pr: PullRequest) -> dict:
         "mergeable": pr.mergeable,
         "roles": sorted(pr.roles),
         "attentionReasons": sorted(pr.attention_reasons),
+        "enrichError": pr.enrich_error,
         "updatedAt": pr.updated_at,
         "createdAt": pr.created_at,
     }
@@ -200,9 +205,23 @@ def main() -> int:
             prs = fetch_prs(qualifiers)
         with err.status(f"Loading details for {len(prs)} PRs…", spinner="dots"):
             _enrich_all(prs, user)
-    except RuntimeError as exc:
+    except GhError as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
+
+    # Enrichment failures mean some PRs have unknown state and may be missing
+    # from the attention view — warn and exit non-zero so "error" never looks
+    # like "nothing to do" (crucial for --count in status bars).
+    failed = [pr for pr in prs if pr.enrich_error]
+    exit_code = 0
+    if failed:
+        err.print(
+            f"[yellow]Warning:[/yellow] could not load details for "
+            f"{len(failed)} of {len(prs)} PRs (rate limited?):"
+        )
+        for pr in failed:
+            err.print(f"  [dim]{pr.id}: {escape(pr.enrich_error)}[/dim]")
+        exit_code = 1
 
     if args.count:
         # In the default view "count" means PRs needing attention; the explicit
@@ -210,11 +229,11 @@ def main() -> int:
         default_view = not (args.created or args.review or args.all)
         n = sum(pr.needs_attention() for pr in prs) if default_view else len(prs)
         print(n)
-        return 0
+        return exit_code
 
     if args.json:
         console.print_json(json.dumps([_to_dict(pr) for pr in prs]))
-        return 0
+        return exit_code
 
     if args.created:
         _render_list(console, prs, title="PRs you created", style="bold blue")
@@ -225,7 +244,7 @@ def main() -> int:
     else:
         _render_attention(console, prs)
 
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

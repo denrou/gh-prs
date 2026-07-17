@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+
+
+class GhError(RuntimeError):
+    """A gh CLI invocation failed (missing binary, auth, network, bad output)."""
+
+
+# C0 control characters and DEL. Rich strips most but notably not ESC (0x1b),
+# so a crafted PR title could otherwise inject raw terminal escape sequences.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 # gh check conclusions / statuses that mean a check has failed.
 _FAILED_STATES = {
@@ -47,6 +57,9 @@ class PullRequest:
     # Reasons this PR needs the current user's attention (e.g. {"review", "ready"}).
     # Empty until enrichment runs.
     attention_reasons: set[str] = field(default_factory=set)
+    # Non-empty if enrichment failed; the PR's decision/CI/mergeable fields are
+    # then unknown, which is different from legitimately empty.
+    enrich_error: str = ""
 
     @classmethod
     def from_json(cls, data: dict) -> PullRequest:
@@ -61,7 +74,7 @@ class PullRequest:
         return cls(
             number=data["number"],
             repo=repo_name,
-            title=data["title"],
+            title=_CONTROL_CHARS.sub("", data["title"]),
             author=author_login,
             url=data.get("url", ""),
             updated_at=data.get("updatedAt", ""),
@@ -102,7 +115,7 @@ def _run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
             check=check,
         )
     except FileNotFoundError:
-        raise RuntimeError(
+        raise GhError(
             "gh CLI not found. Install it from https://cli.github.com/"
         ) from None
 
@@ -121,14 +134,14 @@ def _search_prs(qualifier: str) -> list[PullRequest]:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to fetch PRs: {result.stderr.strip()}")
+        raise GhError(f"Search '--{qualifier}=@me' failed: {result.stderr.strip()}")
     raw = result.stdout.strip()
     if not raw:
         return []
     try:
         return [PullRequest.from_json(item) for item in json.loads(raw)]
     except (json.JSONDecodeError, KeyError) as e:
-        raise RuntimeError(f"Failed to parse PR data: {e}") from None
+        raise GhError(f"Failed to parse '--{qualifier}=@me' PR data: {e}") from e
 
 
 def fetch_prs(qualifiers: list[str] | None = None) -> list[PullRequest]:
@@ -136,10 +149,15 @@ def fetch_prs(qualifiers: list[str] | None = None) -> list[PullRequest]:
 
     ``qualifiers`` selects which ``gh search prs`` filters to run (``author``,
     ``review-requested``, ``assignee``, ``involves``). Defaults to all four.
+
+    Raises ``GhError`` if any search query fails: a partial result (e.g. a
+    rate-limited ``review-requested`` query) would silently hide PRs, and
+    "error" must never look like "nothing to do".
     """
     if qualifiers is None:
         qualifiers = ["author", "review-requested", "assignee", "involves"]
     seen: dict[str, PullRequest] = {}
+    errors: list[str] = []
     with ThreadPoolExecutor(max_workers=max(len(qualifiers), 1)) as pool:
         futures = {pool.submit(_search_prs, q): q for q in qualifiers}
         for future in as_completed(futures):
@@ -151,8 +169,13 @@ def fetch_prs(qualifiers: list[str] | None = None) -> list[PullRequest]:
                     else:
                         pr.roles.add(qualifier)
                         seen[pr.id] = pr
-            except RuntimeError:
-                pass
+            except GhError as exc:
+                errors.append(str(exc))
+    if errors:
+        raise GhError(
+            "Some PR searches failed; results would be incomplete:\n  "
+            + "\n  ".join(errors)
+        )
     # Drop PRs from archived repos. Check unique repos in parallel.
     repos = {pr.repo for pr in seen.values()}
     if not repos:
@@ -181,11 +204,16 @@ def _is_repo_archived(repo: str) -> tuple[str, bool]:
 
 
 def get_current_user() -> str:
-    """Return the login of the authenticated GitHub user."""
+    """Return the login of the authenticated GitHub user.
+
+    Raises ``GhError`` on failure: an empty login would silently break the
+    "did I already review this?" logic in ``enrich_pr``, and gh's own stderr
+    (e.g. "run gh auth login") is the actionable message the user needs.
+    """
     result = _run_gh("api", "user", "--jq", ".login", check=False)
-    if result.returncode == 0:
-        return result.stdout.strip()
-    return ""
+    if result.returncode != 0:
+        raise GhError(f"Could not resolve GitHub user: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
 def _rollup_state(rollup: list[dict]) -> str:
@@ -213,9 +241,11 @@ def _rollup_state(rollup: list[dict]) -> str:
 
 
 def enrich_pr(pr: PullRequest, current_user: str = "") -> None:
-    """Fetch branch, review decision, CI status, and reviews for a single PR.
+    """Fetch review decision, mergeability, CI status, and reviews for one PR.
 
-    Mutates ``pr`` in place and computes ``attention_reasons``.
+    Mutates ``pr`` in place and computes ``attention_reasons``. Drafts get
+    enriched fields but never attention reasons. On failure, sets
+    ``pr.enrich_error`` instead of raising so one bad PR doesn't sink the run.
     """
     try:
         detail = _run_gh(
@@ -228,26 +258,38 @@ def enrich_pr(pr: PullRequest, current_user: str = "") -> None:
             "headRefName,reviewDecision,reviews,mergeable,statusCheckRollup",
             check=False,
         )
-    except RuntimeError:
+    except GhError as exc:
+        pr.enrich_error = str(exc)
         return
     if detail.returncode != 0 or not detail.stdout.strip():
+        pr.enrich_error = detail.stderr.strip() or "gh pr view returned no output"
         return
     try:
         info = json.loads(detail.stdout)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        pr.enrich_error = f"invalid JSON from gh pr view: {exc}"
         return
     pr.head_ref = info.get("headRefName", "")
     pr.review_decision = info.get("reviewDecision", "") or ""
     pr.mergeable = info.get("mergeable", "") or ""
     pr.checks_state = _rollup_state(info.get("statusCheckRollup", []) or [])
+    pr.attention_reasons = _attention_reasons(pr, info.get("reviews", []), current_user)
 
+
+def _attention_reasons(
+    pr: PullRequest, reviews: list[dict], current_user: str
+) -> set[str]:
+    """Compute why an enriched PR needs the current user's attention.
+
+    Pure function of the enriched ``pr`` fields, its review history, and the
+    current user's login. Drafts never need attention.
+    """
     if pr.is_draft:
-        return
+        return set()
 
     reasons: set[str] = set()
 
     # --- PRs where I am asked to review ---
-    reviews = info.get("reviews", [])
     my_reviews = [
         r for r in reviews if (r.get("author") or {}).get("login") == current_user
     ]
@@ -282,4 +324,4 @@ def enrich_pr(pr: PullRequest, current_user: str = "") -> None:
         ):
             reasons.add("ready")
 
-    pr.attention_reasons = reasons
+    return reasons
