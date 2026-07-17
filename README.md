@@ -5,9 +5,11 @@ the `gh` CLI. No TUI — just readable, colored, grouped output.
 
 By default it shows only the PRs that need your attention:
 
-- **Needs your review** — PRs where your review is requested and still pending.
+- **Needs your review** — PRs where your review is requested and still pending
+  (drafts and conflicting PRs excluded — a review would be staled by the rebase).
 - **Ready to ship** — PRs you created that are approved, with CI green and no conflicts.
 - **CI failed** — PRs you created where a check is failing.
+- **Conflicts to resolve** — PRs you created that have merge conflicts.
 
 ## Prerequisites
 

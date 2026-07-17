@@ -44,10 +44,13 @@ Two-module design inside `gh_prs/`:
 A non-draft PR needs attention when any of these hold:
 
 - **review** — your review is requested and still pending (no active approval /
-  changes-requested from you), or your prior review was dismissed.
+  changes-requested from you), or your prior review was dismissed. Conflicting
+  PRs are excluded (a review would be staled by the rebase).
 - **ready** — you authored it, it's `APPROVED`, CI is green (or none), and it's
   not conflicting.
 - **ci-failed** — you authored it and a check is failing.
+- **conflict** — you authored it and it has merge conflicts (independent of
+  `ci-failed`; a PR can have both).
 
 ## Notes
 

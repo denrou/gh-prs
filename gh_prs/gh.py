@@ -270,6 +270,9 @@ def enrich_pr(pr: PullRequest, current_user: str = "") -> None:
 
     # --- PRs I authored that need my action ---
     if "author" in pr.roles:
+        # Conflicts and failing CI are independent actions; a PR can need both.
+        if pr.mergeable == "CONFLICTING":
+            reasons.add("conflict")
         if pr.checks_state == "FAILURE":
             reasons.add("ci-failed")
         elif (

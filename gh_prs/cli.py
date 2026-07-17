@@ -23,6 +23,7 @@ _SECTIONS = [
     ("review", "Needs your review", "bold cyan"),
     ("ready", "Ready to ship", "bold green"),
     ("ci-failed", "CI failed", "bold red"),
+    ("conflict", "Conflicts to resolve", "bold yellow"),
 ]
 
 _REVIEW_STYLE = {
