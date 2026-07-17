@@ -1,8 +1,13 @@
 # gh-prs
 
-TUI for reviewing and merging GitHub pull requests, powered by `gh` CLI and [Textual](https://textual.textualize.io/).
+A simple CLI that lists the GitHub pull requests you need to act on, powered by
+the `gh` CLI. No TUI — just readable, colored, grouped output.
 
-Lists all open pull requests assigned to you or requesting your review across all repositories.
+By default it shows only the PRs that need your attention:
+
+- **Needs your review** — PRs where your review is requested and still pending.
+- **Ready to ship** — PRs you created that are approved, with CI green and no conflicts.
+- **CI failed** — PRs you created where a check is failing.
 
 ## Prerequisites
 
@@ -28,18 +33,13 @@ Then simply run:
 gh prs
 ```
 
-## Keybindings
+## Usage
 
-| Key     | Action                       |
-|---------|------------------------------|
-| `j`/`k` | Navigate down/up            |
-| `Enter` | Show PR details             |
-| `s`     | Toggle select current row   |
-| `a`     | Toggle select all           |
-| `A`     | Approve PR(s)               |
-| `M`     | Merge PR(s) (squash+delete) |
-| `o`     | Open in browser             |
-| `/`     | Filter (regex)              |
-| `c`     | Clear filter                |
-| `g`     | Refresh                     |
-| `q`     | Quit                        |
+```bash
+gh prs              # PRs that need your attention (default)
+gh prs -c/--created # every open PR you created
+gh prs -r/--review  # every PR awaiting your review
+gh prs -a/--all     # every PR you are involved with
+gh prs --json       # raw JSON (for scripting)
+gh prs --no-color   # disable colored output
+```
