@@ -171,6 +171,11 @@ def main() -> int:
         "--json", action="store_true", help="output raw JSON instead of a table"
     )
     parser.add_argument(
+        "--count",
+        action="store_true",
+        help="print only the number of PRs in the selected view (for status bars)",
+    )
+    parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
     )
     args = parser.parse_args()
@@ -197,6 +202,14 @@ def main() -> int:
     except RuntimeError as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
+
+    if args.count:
+        # In the default view "count" means PRs needing attention; the explicit
+        # views (-c/-r/-a) count every PR they would list.
+        default_view = not (args.created or args.review or args.all)
+        n = sum(pr.needs_attention() for pr in prs) if default_view else len(prs)
+        print(n)
+        return 0
 
     if args.json:
         console.print_json(json.dumps([_to_dict(pr) for pr in prs]))
