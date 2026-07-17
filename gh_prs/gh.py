@@ -264,7 +264,8 @@ def enrich_pr(pr: PullRequest, current_user: str = "") -> None:
         and pr.review_decision in ("REVIEW_REQUIRED", "")
         and not user_has_active_review
     )
-    if review_req or dismissed:
+    # Skip conflicting PRs: a review would be staled once the author rebases.
+    if (review_req or dismissed) and pr.mergeable != "CONFLICTING":
         reasons.add("review")
 
     # --- PRs I authored that need my action ---
