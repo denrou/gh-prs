@@ -282,6 +282,26 @@ def count_prs(qualifier: str) -> int:
     return int(results["issueCount"] or 0)
 
 
+def fetch_pr_head(url: str) -> str:
+    """Return the head commit oid of one PR, looked up by URL.
+
+    Raises ``GhError`` on any failure, including a missing oid in the
+    response: a snooze recorded against an unknown head could hide newer work.
+    """
+    result = _run_gh("pr", "view", url, "--json", "headRefOid")
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise GhError(f"Lookup of {url} failed: {detail}")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise GhError(f"Lookup of {url}: invalid JSON from gh: {e}") from e
+    oid = payload.get("headRefOid") if isinstance(payload, dict) else None
+    if not oid or not isinstance(oid, str):
+        raise GhError(f"Lookup of {url}: response has no headRefOid")
+    return oid
+
+
 def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
     """Run one qualifier's search; return (viewer_login, PR nodes, issue_count).
 

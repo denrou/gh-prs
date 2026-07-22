@@ -17,11 +17,15 @@ uv add --dev <pkg>          # Add dev dependency
 
 ## Architecture
 
-Two-module design inside `gh_prs/`:
+Three-module design inside `gh_prs/`:
 
 - **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
   existing `gh auth` session. Exposes a `PullRequest` dataclass plus
-  `fetch_prs()`, `count_prs()`, `ALL_QUALIFIERS`, and the `GhError` exception.
+  `fetch_prs()`, `count_prs()`, `fetch_pr_head()`, `ALL_QUALIFIERS`, and the
+  `GhError` exception.
+- **`snooze.py`** — Local per-PR snooze store (`{PR url: head oid}` JSON at
+  `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
+  no `gh` calls. Raises `SnoozeError`.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
 
@@ -96,6 +100,20 @@ A non-draft PR needs attention when any of these hold:
 - **ci-failed** — you authored it and a check is failing.
 - **conflict** — you authored it and it has merge conflicts (independent of
   `ci-failed`; a PR can have both).
+
+### Snoozing (`snooze.py`, applied in `cli.py`)
+
+`--snooze <url>` records the PR's head oid; the default attention view (table
+and `--count`) then hides the PR while its head still equals that oid. The
+same fail-safe direction as everywhere else applies: an unknown oid on either
+side, a moved head, or an unreadable store all _show_ the PR (a corrupt store
+only warns on the view path, but is fatal for `--snooze`/`--unsnooze`, which
+must not clobber the file). Spent entries are pruned with an on-stderr
+"snooze expired" warning, and the view reports how many attention-worthy PRs
+it withheld. Explicit views (`-c`/`-r`/`-a`), fast counts, and `--json` never
+consult the store — their output stays exact. Entries whose PR no longer
+appears in any search are kept (it may be closed _or_ beyond the 100-node
+cap; deleting on absence would lose live snoozes).
 
 ## Notes
 
