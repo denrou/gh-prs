@@ -12,6 +12,15 @@ By default it shows only the PRs that need your attention:
   Drafts are excluded (not ready for review), as are conflicting PRs (a review
   would be staled by the rebase). A PR also resurfaces here when your previous
   review was dismissed.
+- **New commits since your review** — PRs you already reviewed (approved,
+  requested changes, left a review comment, or had your review dismissed by a
+  push) whose head commit is no longer the one you reviewed — new commits or
+  a rebase the author forgot to re-request review for; the case that is
+  otherwise easy to miss. Hidden while the PR is conflicting (more commits
+  are coming anyway). A PR never appears both here and in **Needs your
+  review**: whenever it qualifies there (e.g. a re-request after a
+  comment-only review), that section wins; a re-request after your
+  still-standing approval keeps it here.
 - **Ready to ship** — PRs you created that are approved, with CI green (or no
   checks) and no conflicts.
 - **CI failed** — PRs you created where a check is failing.

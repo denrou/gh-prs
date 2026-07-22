@@ -28,7 +28,8 @@ Two-module design inside `gh_prs/`:
 ### Loading (single GraphQL round-trip per qualifier)
 
 `fetch_prs(qualifiers)` runs one `gh api graphql` search per qualifier
-(`author`, `review-requested`, `assignee`, `involves`) in parallel threads.
+(`author`, `review-requested`, `reviewed-by`, `assignee`, `involves`) in
+parallel threads.
 Each search fetches everything in one shot — review decision, mergeability,
 CI rollup state, `latestReviews`, `reviewRequests`, plus the viewer's login —
 so there is no per-PR enrichment phase. `attention_reasons` is computed by the
@@ -45,10 +46,11 @@ Performance notes (measured once; exact figures drift, the ratios hold):
   count-only `issueCount` query is roughly an order of magnitude faster than
   a hydrated one. `count_prs()` exploits this for single-qualifier `--count`
   (`-c`/`-r`), the status-bar polling path.
-- Each search is capped at `_SEARCH_LIMIT` (100) nodes; when `issueCount`
-  exceeds it, `fetch_prs()` reports the truncation through its `on_warning`
-  callback (the CLI prints it to stderr). Counts from `count_prs()` are exact
-  regardless of the cap.
+- Each search is capped at `_SEARCH_LIMIT` (100) nodes; searches are
+  `sort:updated-desc`, so truncation keeps the most recently updated PRs, and
+  when `issueCount` exceeds the cap `fetch_prs()` reports the truncation
+  through its `on_warning` callback (the CLI prints it to stderr). Counts
+  from `count_prs()` are exact regardless of the cap.
 
 ### Error handling
 
@@ -73,6 +75,22 @@ A non-draft PR needs attention when any of these hold:
   mergeable without you — unless you are personally on the
   requested-reviewers list (`review_requested_explicitly`, i.e. requested as
   a User, not through a Team).
+- **new-commits** — you reviewed someone else's PR (`APPROVED`,
+  `CHANGES_REQUESTED`, `COMMENTED`, or `DISMISSED` — the latter for repos
+  that auto-dismiss stale reviews on push) and the head oid no longer
+  matches the oid your review was submitted against (`latestReviews.commit`
+  vs `headRefOid`) — new commits or a rebase the author forgot to re-request
+  review for. Commit identity is compared, not `committedDate`: committer
+  timestamps are mutable metadata. A missing oid on either side counts as
+  "moved" (unknown must never read as "nothing to do"); only both-missing
+  stays quiet. Hidden when: the PR is conflicting (more commits are coming);
+  the **review** reason already fired (no double listing); or you authored
+  the PR (a comment review on your own PR must not self-flag). Surfaced by
+  the `reviewed-by:@me` search in the default view — review requests
+  disappear once fulfilled, so these PRs match no other attention qualifier.
+  When the `latestReviews` 50-node cap hides your review on a `reviewed-by`
+  PR, `fetch_prs` reports the contradiction through `on_warning` instead of
+  silently skipping the PR.
 - **ready** — you authored it, it's `APPROVED`, CI is green (or none), and it's
   not conflicting.
 - **ci-failed** — you authored it and a check is failing.

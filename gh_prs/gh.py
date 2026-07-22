@@ -25,6 +25,7 @@ _GH_TIMEOUT = 60
 _SEARCH_FILTERS = {
     "author": "author:@me",
     "review-requested": "review-requested:@me",
+    "reviewed-by": "reviewed-by:@me",
     "assignee": "assignee:@me",
     "involves": "involves:@me",
 }
@@ -46,7 +47,8 @@ _ROLLUP_STATE = {
 
 # The first: 50 caps on reviewRequests/latestReviews silently truncate on PRs
 # with more than 50 requested reviewers or reviewers; the viewer's own entry
-# could then be missed (false-negative review detection). Accepted trade-off.
+# could then be missed (false-negative review and new-commits detection).
+# fetch_prs surfaces the reviewed-by contradiction through on_warning.
 _PR_FRAGMENT = """
 fragment prFields on PullRequest {
   number
@@ -57,12 +59,13 @@ fragment prFields on PullRequest {
   isDraft
   reviewDecision
   mergeable
+  headRefOid
   repository { nameWithOwner }
   author { login }
   reviewRequests(first: 50) {
     nodes { requestedReviewer { __typename ... on User { login } } }
   }
-  latestReviews(first: 50) { nodes { author { login } state } }
+  latestReviews(first: 50) { nodes { author { login } state commit { oid } } }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
 }
 """
@@ -100,6 +103,11 @@ class PullRequest:
     # State of the current user's latest review ("APPROVED", "DISMISSED", …),
     # or "" if they never reviewed.
     my_review_state: str = ""
+    # Oid of the commit that review was submitted against, "" if they never
+    # reviewed or GitHub no longer links one (e.g. it was force-pushed away).
+    my_review_commit: str = ""
+    # Head commit oid of the PR branch, "" if unavailable.
+    head_ref_oid: str = ""
     # True when the current user is personally on the requested-reviewers
     # list (not merely through a team).
     review_requested_explicitly: bool = False
@@ -129,9 +137,11 @@ class PullRequest:
 
         # latestReviews already collapses to each reviewer's most recent review.
         my_review_state = ""
+        my_review_commit = ""
         for review in (node.get("latestReviews") or {}).get("nodes") or []:
             if ((review or {}).get("author") or {}).get("login") == current_user:
                 my_review_state = review.get("state") or ""
+                my_review_commit = ((review.get("commit") or {}).get("oid")) or ""
                 break
 
         # Only User reviewers carry a login in the fragment; a request routed
@@ -158,6 +168,8 @@ class PullRequest:
             mergeable=node.get("mergeable") or "",
             checks_state=checks_state,
             my_review_state=my_review_state,
+            my_review_commit=my_review_commit,
+            head_ref_oid=node.get("headRefOid") or "",
             review_requested_explicitly=explicit,
         )
 
@@ -202,7 +214,12 @@ def _run_gh(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _search_string(qualifier: str) -> str:
-    return f"is:pr is:open archived:false {_SEARCH_FILTERS[qualifier]}"
+    # sort:updated-desc makes _SEARCH_LIMIT truncation keep the most recently
+    # updated PRs — the ones most likely to need attention (and makes the
+    # truncation warning's "newest" claim literal).
+    return (
+        f"is:pr is:open archived:false sort:updated-desc {_SEARCH_FILTERS[qualifier]}"
+    )
 
 
 def _graphql(context: str, *args: str) -> dict[str, Any]:
@@ -298,8 +315,9 @@ def fetch_prs(
     """Fetch open PRs the current user is involved with, fully enriched.
 
     Runs one ``gh api graphql`` search per qualifier (``author``,
-    ``review-requested``, ``assignee``, ``involves`` — defaults to all four)
-    in parallel; GitHub executes aliased searches sequentially, so separate
+    ``review-requested``, ``reviewed-by``, ``assignee``, ``involves`` —
+    defaults to all five) in parallel; GitHub executes aliased searches
+    sequentially, so separate
     requests cost the slowest search instead of the sum. Each search is
     capped at 100 PRs and fetches everything in one shot: review decision,
     mergeability, CI rollup, latest reviews, and review requests. Archived
@@ -307,7 +325,10 @@ def fetch_prs(
     is computed before returning.
 
     ``on_warning`` (if given) receives a message when a search matched more
-    PRs than the cap, so truncation is informed rather than silent.
+    PRs than the cap, and when a PR matched by ``reviewed-by`` carries no
+    parsable own-review (the ``latestReviews`` 50-node cap hid it, so
+    new-commit detection may miss that PR) — either way, degraded coverage
+    is informed rather than silent.
 
     Raises ``GhError`` if any search fails or returns unparseable data: a
     partial result would silently hide PRs, and "error" must never look like
@@ -370,6 +391,20 @@ def fetch_prs(
 
     for pr in seen.values():
         pr.attention_reasons = _attention_reasons(pr)
+        # The reviewed-by search positively asserts I reviewed this PR; an
+        # empty my_review_state therefore means the latestReviews 50-node cap
+        # hid my review — a contradiction that would otherwise silently
+        # disable new-commit detection for this PR. Drafts never flag anyway.
+        if (
+            on_warning is not None
+            and not pr.is_draft
+            and "reviewed-by" in pr.roles
+            and not pr.my_review_state
+        ):
+            on_warning(
+                f"{pr.id}: your review is not among its first 50 latest "
+                "reviews; new-commit detection may miss it"
+            )
     return sorted(seen.values(), key=lambda p: p.updated_at, reverse=True)
 
 
@@ -402,6 +437,30 @@ def _attention_reasons(pr: PullRequest) -> set[str]:
         and (pr.review_decision != "APPROVED" or pr.review_requested_explicitly)
     ):
         reasons.add("review")
+
+    # --- PRs I already reviewed that moved on without a re-request ---
+    # Fires when the head commit is no longer the commit my review was
+    # submitted against — new commits, or a rebase/force-push that staled the
+    # review — and the author never re-requested. Commit identity is compared
+    # rather than committedDate: committer timestamps are mutable metadata,
+    # while oids pin the exact reviewed state. A missing oid on either side
+    # still counts as "moved" (unknown must never read as "nothing to do");
+    # only with no oid at all is there nothing to compare. DISMISSED is
+    # included for repos that auto-dismiss stale reviews on push; the
+    # "review" reason keeps precedence, so a PR is never listed twice.
+    if (
+        "review" not in reasons
+        and pr.my_review_state
+        in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED")
+        # A comment-review on my own PR must not self-flag.
+        and "author" not in pr.roles
+        and (pr.my_review_commit or pr.head_ref_oid)
+        and pr.my_review_commit != pr.head_ref_oid
+        # Once conflicting, more commits are coming; reviewing now is premature
+        # (same reasoning as for "review").
+        and pr.mergeable != "CONFLICTING"
+    ):
+        reasons.add("new-commits")
 
     # --- PRs I authored that need my action ---
     if "author" in pr.roles:

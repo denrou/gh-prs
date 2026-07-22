@@ -21,15 +21,19 @@ from gh_prs.gh import (
 # (reason key, section title, header style)
 _SECTIONS = [
     ("review", "Needs your review", "bold cyan"),
+    ("new-commits", "New commits since your review", "bold magenta"),
     ("ready", "Ready to ship", "bold green"),
     ("ci-failed", "CI failed", "bold red"),
     ("conflict", "Conflicts to resolve", "bold yellow"),
 ]
 
+# Sections listing other people's PRs show the author column.
+_SECTIONS_WITH_AUTHOR = {"review", "new-commits"}
+
 # Per-view configuration: search qualifiers, flat-list title, and its style.
 # The "attention" view renders grouped sections instead of a flat list.
 _VIEWS: dict[str, tuple[list[str], str, str]] = {
-    "attention": (["author", "review-requested"], "", ""),
+    "attention": (["author", "review-requested", "reviewed-by"], "", ""),
     "created": (["author"], "PRs you created", "bold blue"),
     "review": (["review-requested"], "PRs awaiting your review", "bold cyan"),
     "all": (list(ALL_QUALIFIERS), "All PRs you are involved with", "bold"),
@@ -108,7 +112,11 @@ def _render_attention(console: Console, prs: list[PullRequest]) -> None:
         group = [pr for pr in attention if reason in pr.attention_reasons]
         if group:
             _render_section(
-                console, title, style, group, show_author=(reason == "review")
+                console,
+                title,
+                style,
+                group,
+                show_author=(reason in _SECTIONS_WITH_AUTHOR),
             )
 
 
@@ -152,6 +160,8 @@ def _to_dict(pr: PullRequest) -> dict[str, Any]:
         "checksState": pr.checks_state,
         "mergeable": pr.mergeable,
         "myReviewState": pr.my_review_state,
+        "myReviewCommit": pr.my_review_commit,
+        "headRefOid": pr.head_ref_oid,
         "reviewRequestedExplicitly": pr.review_requested_explicitly,
         "roles": sorted(pr.roles),
         "attentionReasons": sorted(pr.attention_reasons),

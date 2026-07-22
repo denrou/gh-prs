@@ -112,6 +112,96 @@ class TestReviewReason:
         assert _attention_reasons(pr) == {"review"}
 
 
+class TestNewCommitsReason:
+    """The head moved after my review, without a re-request."""
+
+    _REVIEWED = dict(
+        roles={"reviewed-by"},
+        my_review_state="APPROVED",
+        my_review_commit="aaa111",
+        head_ref_oid="bbb222",
+    )
+
+    def test_head_moved_after_my_approval_flags(self):
+        pr = _pr(**self._REVIEWED)
+        assert _attention_reasons(pr) == {"new-commits"}
+
+    @pytest.mark.parametrize("state", ["CHANGES_REQUESTED", "COMMENTED"])
+    def test_head_moved_after_any_submitted_review_flags(self, state):
+        pr = _pr(**self._REVIEWED | {"my_review_state": state})
+        assert _attention_reasons(pr) == {"new-commits"}
+
+    def test_unchanged_head_does_not_flag(self):
+        pr = _pr(**self._REVIEWED | {"head_ref_oid": "aaa111"})
+        assert _attention_reasons(pr) == set()
+
+    @pytest.mark.parametrize("field", ["my_review_commit", "head_ref_oid"])
+    def test_one_missing_oid_still_flags(self, field):
+        # An absent oid (drift, or the reviewed commit force-pushed away)
+        # counts as "moved": unknown must never read as "nothing to do".
+        pr = _pr(**self._REVIEWED | {field: ""})
+        assert _attention_reasons(pr) == {"new-commits"}
+
+    def test_both_oids_missing_stays_quiet(self):
+        # With no oid at all there is nothing to compare.
+        pr = _pr(**self._REVIEWED | {"my_review_commit": "", "head_ref_oid": ""})
+        assert _attention_reasons(pr) == set()
+
+    def test_conflicting_pr_does_not_flag(self):
+        # More commits are coming anyway; reviewing now is premature.
+        pr = _pr(**self._REVIEWED | {"mergeable": "CONFLICTING"})
+        assert _attention_reasons(pr) == set()
+
+    def test_draft_does_not_flag(self):
+        pr = _pr(**self._REVIEWED | {"is_draft": True})
+        assert _attention_reasons(pr) == set()
+
+    def test_comment_review_on_my_own_pr_does_not_self_flag(self):
+        pr = _pr(**self._REVIEWED | {"roles": {"author", "reviewed-by"}})
+        assert _attention_reasons(pr) == set()
+
+    def test_changes_requested_decision_does_not_hide(self):
+        # Deliberately unlike "review": commits landing while the overall
+        # decision is CHANGES_REQUESTED are plausibly the rework to look at.
+        pr = _pr(**self._REVIEWED | {"review_decision": "CHANGES_REQUESTED"})
+        assert _attention_reasons(pr) == {"new-commits"}
+
+    def test_re_requested_after_comment_yields_review_not_both(self):
+        # An explicit re-request wins: the PR belongs in "review", not twice.
+        pr = _pr(
+            **self._REVIEWED
+            | {
+                "roles": {"reviewed-by", "review-requested"},
+                "my_review_state": "COMMENTED",
+            }
+        )
+        assert _attention_reasons(pr) == {"review"}
+
+    def test_re_requested_after_approval_still_flags_new_commits(self):
+        # An active approval suppresses "review", but the head moving since
+        # that approval is exactly what this reason must surface.
+        pr = _pr(**self._REVIEWED | {"roles": {"reviewed-by", "review-requested"}})
+        assert _attention_reasons(pr) == {"new-commits"}
+
+    def test_dismissed_with_visible_review_reason_wins(self):
+        # A dismissal normally re-triggers "review"; no double listing.
+        pr = _pr(**self._REVIEWED | {"my_review_state": "DISMISSED"})
+        assert _attention_reasons(pr) == {"review"}
+
+    def test_dismissed_hidden_by_approved_decision_flags_new_commits(self):
+        # Auto-dismiss-on-push repos: my approval was dismissed by the push,
+        # a colleague approved, I'm not personally re-requested — "review"
+        # hides (mergeable without me), but the head still moved on me.
+        pr = _pr(
+            **self._REVIEWED
+            | {
+                "my_review_state": "DISMISSED",
+                "review_decision": "APPROVED",
+            }
+        )
+        assert _attention_reasons(pr) == {"new-commits"}
+
+
 class TestAuthorReasons:
     def test_approved_green_ci_is_ready(self):
         pr = _pr(
@@ -229,17 +319,49 @@ class TestFromGraphql:
         )
         assert PullRequest.from_graphql(node, "me").checks_state == "PENDING"
 
-    def test_my_latest_review_state_extracted(self):
+    def test_my_latest_review_state_and_commit_extracted(self):
         node = _node(
             latestReviews={
                 "nodes": [
                     {"author": {"login": "someone-else"}, "state": "APPROVED"},
-                    {"author": {"login": "me"}, "state": "DISMISSED"},
+                    {
+                        "author": {"login": "me"},
+                        "state": "DISMISSED",
+                        "commit": {"oid": "aaa111"},
+                    },
                 ]
             }
         )
         pr = PullRequest.from_graphql(node, "me")
         assert pr.my_review_state == "DISMISSED"
+        assert pr.my_review_commit == "aaa111"
+
+    def test_no_review_means_empty_review_commit(self):
+        pr = PullRequest.from_graphql(_node(), "me")
+        assert pr.my_review_state == ""
+        assert pr.my_review_commit == ""
+
+    def test_null_review_commit_defaults_to_empty(self):
+        # GitHub returns a null commit when the reviewed commit is gone
+        # (e.g. force-pushed away); "" then reads as "moved" in
+        # _attention_reasons (checked in TestNewCommitsReason).
+        node = _node(
+            latestReviews={
+                "nodes": [
+                    {"author": {"login": "me"}, "state": "APPROVED", "commit": None}
+                ]
+            }
+        )
+        assert PullRequest.from_graphql(node, "me").my_review_commit == ""
+
+    def test_head_ref_oid_extracted(self):
+        assert (
+            PullRequest.from_graphql(_node(headRefOid="bbb222"), "me").head_ref_oid
+            == "bbb222"
+        )
+
+    def test_missing_head_ref_oid_defaults_to_empty(self):
+        assert PullRequest.from_graphql(_node(), "me").head_ref_oid == ""
 
     def test_explicit_user_review_request_detected(self):
         node = _node(
@@ -468,6 +590,28 @@ class TestFetchPrs:
         )
         with pytest.raises(GhError, match="authenticated user"):
             fetch_prs(["author"])
+
+    def test_reviewed_by_without_parsed_review_triggers_warning(self, monkeypatch):
+        # The reviewed-by search asserts I reviewed the PR; my review being
+        # absent from latestReviews (50-node cap) would silently disable
+        # new-commit detection for it — surface the contradiction instead.
+        monkeypatch.setattr(
+            gh, "_search", self._fake_search({"reviewed-by": ("me", [_node()], 1)})
+        )
+        warnings: list[str] = []
+        fetch_prs(["reviewed-by"], on_warning=warnings.append)
+        assert warnings and "acme/widgets#42" in warnings[0]
+
+    def test_reviewed_by_draft_does_not_warn(self, monkeypatch):
+        # Drafts never flag, so the missed review changes nothing.
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search({"reviewed-by": ("me", [_node(isDraft=True)], 1)}),
+        )
+        warnings: list[str] = []
+        fetch_prs(["reviewed-by"], on_warning=warnings.append)
+        assert warnings == []
 
     def test_truncation_triggers_warning(self, monkeypatch):
         monkeypatch.setattr(

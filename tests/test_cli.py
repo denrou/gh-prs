@@ -34,9 +34,15 @@ def fake_backend(monkeypatch):
 
 
 class TestQualifierSelection:
-    def test_default_view_searches_author_and_review_requested(self, fake_backend):
+    def test_default_view_searches_author_review_requested_reviewed_by(
+        self, fake_backend
+    ):
         cli.main([])
-        assert fake_backend["qualifiers"] == ["author", "review-requested"]
+        assert fake_backend["qualifiers"] == [
+            "author",
+            "review-requested",
+            "reviewed-by",
+        ]
 
     def test_created_view_searches_author_only(self, fake_backend):
         cli.main(["-c"])
@@ -51,6 +57,7 @@ class TestQualifierSelection:
         assert fake_backend["qualifiers"] == [
             "author",
             "review-requested",
+            "reviewed-by",
             "assignee",
             "involves",
         ]
@@ -135,6 +142,8 @@ class TestJsonOutput:
             '"checksState"',
             '"mergeable"',
             '"myReviewState"',
+            '"myReviewCommit"',
+            '"headRefOid"',
             '"reviewRequestedExplicitly"',
             '"roles"',
             '"attentionReasons"',
@@ -144,6 +153,23 @@ class TestJsonOutput:
             assert key in out, key
         # Sets are serialized sorted for stable output.
         assert out.index('"author"') < out.index('"review-requested"')
+
+
+class TestAttentionRendering:
+    def test_every_attention_reason_has_a_section(self):
+        # A reason without a section would count toward --count yet never
+        # render — the PR would be invisible while "needing attention".
+        emittable = {"review", "new-commits", "ready", "ci-failed", "conflict"}
+        assert emittable == {reason for reason, _, _ in cli._SECTIONS}
+
+    def test_new_commits_section_renders_with_author(self):
+        pr = _pr(1, attention_reasons={"new-commits"}, author="octocat")
+        console = Console(no_color=True, force_terminal=False, width=200)
+        with console.capture() as capture:
+            cli._render_attention(console, [pr])
+        out = capture.get()
+        assert "New commits since your review" in out
+        assert "octocat" in out
 
 
 class TestEscaping:
