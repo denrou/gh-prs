@@ -10,8 +10,9 @@ state for a bounded time, never unknown or newer work.
 
 The store is a JSON object mapping canonical PR URL → ``{"oid", "until"}``,
 kept at ``$XDG_CONFIG_HOME/gh-prs/snooze.json`` (``~/.config/gh-prs/
-snooze.json`` by default). Explicit views (``-c``/``-r``/``-a``) and count
-queries never consult it, so their numbers stay exact.
+snooze.json`` by default). Only the default attention view (its table and
+``--count``) consults it; explicit views (``-c``/``-r``/``-a``), their fast
+counts, and ``--json`` never do, so their numbers stay exact.
 """
 
 import json
@@ -28,9 +29,11 @@ class SnoozeError(Exception):
 
 
 # Canonical PR URL prefix: scheme, host (github.com or an Enterprise host),
-# owner, repo, "pull", number. Everything after the number (e.g. "/files",
-# "?diff=split", "#discussion_r1") is browser navigation state, not identity.
-_PR_URL = re.compile(r"^(https://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)")
+# owner, repo, "pull", number. The number must be followed by end-of-string
+# or a separator — browser navigation state such as "/files", "?diff=split",
+# or "#discussion_r1", which is discarded. Anything fused to the digits
+# (".../pull/42abc") is a typo, and truncating it would snooze the wrong PR.
+_PR_URL = re.compile(r"^(https://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)(?=$|[/?#])")
 
 # github.com shorthand: owner/repo/123 or owner/repo#123. Anchored to exactly
 # three segments so full URLs never match. Enterprise hosts need the full URL.
@@ -91,9 +94,13 @@ def load_snoozes(path: Path | None = None) -> dict[str, dict[str, str]]:
     """
     path = path or snooze_path()
     try:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
+    except UnicodeDecodeError as e:
+        # Not an OSError: without this clause a corrupt (e.g. truncated)
+        # file would crash the caller instead of degrading.
+        raise SnoozeError(f"{path} is not valid UTF-8: {e}") from e
     except OSError as e:
         raise SnoozeError(f"cannot read {path}: {e}") from e
     try:
@@ -121,7 +128,13 @@ def save_snoozes(snoozes: dict[str, dict[str, str]], path: Path | None = None) -
     path = path or snooze_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(snoozes, indent=2, sort_keys=True) + "\n")
+        # Write-then-rename so a crash mid-write can't leave a truncated
+        # store (which would then read as corrupt).
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(
+            json.dumps(snoozes, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
     except OSError as e:
         raise SnoozeError(f"cannot write {path}: {e}") from e
 
@@ -134,13 +147,18 @@ def make_entry(oid: str, now: datetime, duration: timedelta) -> dict[str, str]:
 def is_expired(entry: dict[str, str], now: datetime) -> bool:
     """True when the entry's window has elapsed.
 
-    A missing, unparseable, or naive (not comparable to the aware ``now``)
-    timestamp counts as expired: fail-safe, the PR shows.
+    A missing, unparseable, or naive stored timestamp counts as expired:
+    fail-safe, the PR shows. ``now`` must be timezone-aware — the comparison
+    happens outside the try so a naive ``now`` (a caller bug) raises loudly
+    instead of silently expiring every entry in the store.
     """
     try:
-        return datetime.fromisoformat(entry["until"]) <= now
+        until = datetime.fromisoformat(entry["until"])
     except KeyError, ValueError, TypeError:
         return True
+    if until.tzinfo is None:
+        return True
+    return until <= now
 
 
 def split_snoozed(

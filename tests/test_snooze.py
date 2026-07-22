@@ -78,11 +78,18 @@ class TestNormalizePrUrl:
             "https://github.com/acme/widgets",
             "https://github.com/acme/widgets/issues/42",
             "http://github.com/acme/widgets/pull/42",  # only https is canonical
+            # Garbage fused to the number is a typo, not navigation state;
+            # truncating it would snooze the wrong PR.
+            "https://github.com/acme/widgets/pull/42abc",
         ],
     )
     def test_non_pr_reference_rejected(self, bad):
         with pytest.raises(SnoozeError):
             normalize_pr_url(bad)
+
+    def test_multi_digit_number_not_truncated(self):
+        url = "https://github.com/acme/widgets/pull/423"
+        assert normalize_pr_url(url + "/files") == url
 
 
 class TestParseDuration:
@@ -122,6 +129,14 @@ class TestStore:
         with pytest.raises(SnoozeError):
             load_snoozes(path)
 
+    def test_invalid_utf8_raises_snooze_error(self, tmp_path):
+        # UnicodeDecodeError is a ValueError, not an OSError — it must still
+        # surface as SnoozeError so callers can degrade instead of crashing.
+        path = tmp_path / "snooze.json"
+        path.write_bytes(b'\xff\xfe{"a": 1}')
+        with pytest.raises(SnoozeError):
+            load_snoozes(path)
+
     @pytest.mark.parametrize(
         "raw",
         [
@@ -158,6 +173,12 @@ class TestIsExpired:
     def test_uncomparable_timestamp_counts_as_expired(self, until):
         # Fail-safe: a timestamp we can't trust must show the PR.
         assert is_expired({"oid": "cafe", "until": until}, _NOW)
+
+    def test_naive_now_is_a_caller_bug_and_raises(self):
+        # A naive `now` would otherwise silently expire every entry in the
+        # store; it must raise loudly instead.
+        with pytest.raises(TypeError):
+            is_expired(_entry(hours=1), datetime(2026, 7, 22, 12, 0, 0))
 
 
 class TestSplitSnoozed:

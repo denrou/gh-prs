@@ -23,8 +23,8 @@ Three-module design inside `gh_prs/`:
   existing `gh auth` session. Exposes a `PullRequest` dataclass plus
   `fetch_prs()`, `count_prs()`, `fetch_pr_head()`, `ALL_QUALIFIERS`, and the
   `GhError` exception.
-- **`snooze.py`** — Local per-PR snooze store (`{PR url: head oid}` JSON at
-  `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
+- **`snooze.py`** — Local per-PR snooze store (`{PR url: {oid, until}}` JSON
+  at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
   no `gh` calls. Raises `SnoozeError`.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.

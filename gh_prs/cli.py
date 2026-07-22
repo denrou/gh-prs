@@ -369,7 +369,15 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     save_snoozes(snoozes)
                 except SnoozeError as exc:
-                    warn(str(exc))
+                    warn(f"could not prune expired snoozes: {exc}")
+        # Hiding is never silent — even for --count, where the number a
+        # status bar shows would otherwise silently drop. Only
+        # attention-worthy PRs were actually withheld.
+        hidden = sum(pr.needs_attention() for pr in hidden_snoozed)
+        if hidden:
+            err.print(
+                f"[dim]{hidden} snoozed PR(s) hidden — 'gh prs --snoozed' to list[/dim]"
+            )
 
     if args.count:
         # In the default view "count" means PRs needing attention; the explicit
@@ -386,12 +394,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.view == "attention":
         _render_attention(console, prs)
-        # Only attention-worthy PRs were actually withheld from the table.
-        hidden = sum(pr.needs_attention() for pr in hidden_snoozed)
-        if hidden:
-            err.print(
-                f"[dim]{hidden} snoozed PR(s) hidden — 'gh prs --snoozed' to list[/dim]"
-            )
     else:
         _render_list(console, prs, title=list_title, style=list_style)
 

@@ -251,14 +251,17 @@ class TestSnoozeFiltering:
         assert cli.main(["--no-color"]) == 0
         assert "snoozed PR(s) hidden" not in capsys.readouterr().err
 
-    def test_attention_count_respects_snooze(self, fake_backend, capsys):
+    def test_attention_count_respects_snooze_and_notes_it(self, fake_backend, capsys):
         fake_backend["prs"] = [
             _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"}),
             _pr(2, attention_reasons={"ready"}),
         ]
         save_snoozes({_SNOOZE_URL: _entry("cafe")})
         assert cli.main(["--count"]) == 0
-        assert capsys.readouterr().out.strip() == "1"
+        captured = capsys.readouterr()
+        # stdout stays pure for status bars; the hiding is reported on stderr.
+        assert captured.out.strip() == "1"
+        assert "1 snoozed PR(s) hidden" in captured.err
 
     def test_review_view_ignores_snoozes(self, fake_backend, capsys):
         # Explicit views must stay exact: the PR factually awaits review.
@@ -275,14 +278,17 @@ class TestSnoozeFiltering:
         assert cli.main(["--json", "--no-color"]) == 0
         assert _SNOOZE_URL in capsys.readouterr().out
 
-    def test_corrupt_store_warns_and_shows_everything(self, fake_backend, capsys):
+    @pytest.mark.parametrize(
+        "raw", [b"{not json", b'\xff\xfe{"a": 1}']
+    )  # invalid JSON / invalid UTF-8
+    def test_corrupt_store_warns_and_shows_everything(self, fake_backend, capsys, raw):
         # Fail-safe direction: a broken store may only ever show more PRs.
         fake_backend["prs"] = [
             _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
         ]
         path = snooze_path()
         path.parent.mkdir(parents=True)
-        path.write_text("{not json")
+        path.write_bytes(raw)
         assert cli.main(["--no-color"]) == 0
         captured = capsys.readouterr()
         assert "PR 1" in captured.out
