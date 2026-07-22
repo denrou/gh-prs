@@ -1,18 +1,24 @@
-"""Tests for gh_prs.snooze: URL normalization, store I/O, and partitioning."""
+"""Tests for gh_prs.snooze: normalization, durations, store I/O, and partitioning."""
+
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from gh_prs.gh import PullRequest
 from gh_prs.snooze import (
     SnoozeError,
+    is_expired,
     load_snoozes,
+    make_entry,
     normalize_pr_url,
+    parse_duration,
     save_snoozes,
     snooze_path,
     split_snoozed,
 )
 
 _URL = "https://github.com/acme/widgets/pull/42"
+_NOW = datetime(2026, 7, 22, 12, 0, 0, tzinfo=UTC)
 
 
 def _pr(url: str = _URL, **overrides) -> PullRequest:
@@ -27,6 +33,11 @@ def _pr(url: str = _URL, **overrides) -> PullRequest:
         is_draft=False,
     )
     return PullRequest(**(defaults | overrides))
+
+
+def _entry(oid: str = "cafe123", hours: float = 24) -> dict[str, str]:
+    """A store entry expiring ``hours`` after the fixed test clock."""
+    return make_entry(oid, _NOW, timedelta(hours=hours))
 
 
 class TestNormalizePrUrl:
@@ -53,19 +64,47 @@ class TestNormalizePrUrl:
         url = "https://ghe.example.com/acme/widgets/pull/7"
         assert normalize_pr_url(url) == url
 
+    @pytest.mark.parametrize("shorthand", ["acme/widgets/42", "acme/widgets#42"])
+    def test_shorthand_expands_to_github_url(self, shorthand):
+        assert normalize_pr_url(shorthand) == _URL
+
     @pytest.mark.parametrize(
         "bad",
         [
             "",
-            "acme/widgets#42",
+            "acme/widgets",
+            "acme/widgets/1a",
+            "acme/widgets/pull/42",  # four segments: neither shorthand nor URL
             "https://github.com/acme/widgets",
             "https://github.com/acme/widgets/issues/42",
             "http://github.com/acme/widgets/pull/42",  # only https is canonical
         ],
     )
-    def test_non_pr_url_rejected(self, bad):
+    def test_non_pr_reference_rejected(self, bad):
         with pytest.raises(SnoozeError):
             normalize_pr_url(bad)
+
+
+class TestParseDuration:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("12h", timedelta(hours=12)),
+            ("24h", timedelta(hours=24)),
+            ("3d", timedelta(days=3)),
+            ("1w", timedelta(weeks=1)),
+            (" 2D ", timedelta(days=2)),  # case- and whitespace-insensitive
+        ],
+    )
+    def test_valid_durations(self, text, expected):
+        assert parse_duration(text) == expected
+
+    @pytest.mark.parametrize(
+        "bad", ["", "h", "12", "12m", "1.5d", "-1d", "0h", "forever"]
+    )
+    def test_invalid_durations_rejected(self, bad):
+        with pytest.raises(SnoozeError):
+            parse_duration(bad)
 
 
 class TestStore:
@@ -74,8 +113,8 @@ class TestStore:
 
     def test_save_load_roundtrip_creates_directories(self, tmp_path):
         path = tmp_path / "deep" / "snooze.json"
-        save_snoozes({_URL: "cafe123"}, path)
-        assert load_snoozes(path) == {_URL: "cafe123"}
+        save_snoozes({_URL: _entry()}, path)
+        assert load_snoozes(path) == {_URL: _entry()}
 
     def test_invalid_json_raises(self, tmp_path):
         path = tmp_path / "snooze.json"
@@ -83,7 +122,17 @@ class TestStore:
         with pytest.raises(SnoozeError):
             load_snoozes(path)
 
-    @pytest.mark.parametrize("raw", ["[]", '"oid"', '{"url": 1}', '{"url": null}'])
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "[]",
+            '"oid"',
+            '{"url": 1}',
+            '{"url": "bare-oid"}',  # the pre-expiry flat format
+            '{"url": {"oid": "cafe"}}',  # missing until
+            '{"url": {"oid": "cafe", "until": 5}}',
+        ],
+    )
     def test_wrong_shape_raises(self, tmp_path, raw):
         path = tmp_path / "snooze.json"
         path.write_text(raw)
@@ -95,38 +144,70 @@ class TestStore:
         assert snooze_path() == tmp_path / "gh-prs" / "snooze.json"
 
 
+class TestIsExpired:
+    def test_future_timestamp_is_live(self):
+        assert not is_expired(_entry(hours=1), _NOW)
+
+    def test_past_timestamp_is_expired(self):
+        assert is_expired(_entry(hours=-1), _NOW)
+
+    @pytest.mark.parametrize(
+        "until",
+        ["", "not-a-date", "2026-07-23T12:00:00"],  # last one is naive
+    )
+    def test_uncomparable_timestamp_counts_as_expired(self, until):
+        # Fail-safe: a timestamp we can't trust must show the PR.
+        assert is_expired({"oid": "cafe", "until": until}, _NOW)
+
+
 class TestSplitSnoozed:
-    def test_matching_head_is_hidden(self):
+    def test_matching_head_within_window_is_hidden(self):
         pr = _pr(head_ref_oid="cafe123")
-        visible, hidden, spent = split_snoozed([pr], {_URL: "cafe123"})
-        assert (visible, hidden, spent) == ([], [pr], [])
+        visible, hidden, dead = split_snoozed([pr], {_URL: _entry()}, _NOW)
+        assert (visible, hidden, dead) == ([], [pr], {})
 
-    def test_moved_head_resurfaces_as_spent(self):
+    def test_moved_head_resurfaces_as_dead(self):
         pr = _pr(head_ref_oid="beef456")
-        visible, hidden, spent = split_snoozed([pr], {_URL: "cafe123"})
-        assert (visible, hidden, spent) == ([pr], [], [_URL])
+        visible, hidden, dead = split_snoozed([pr], {_URL: _entry()}, _NOW)
+        assert (visible, hidden) == ([pr], [])
+        assert dead == {_URL: "head moved since you snoozed it"}
 
-    def test_unknown_head_resurfaces_as_spent(self):
+    def test_elapsed_window_resurfaces_as_dead(self):
+        pr = _pr(head_ref_oid="cafe123")
+        visible, hidden, dead = split_snoozed([pr], {_URL: _entry(hours=-1)}, _NOW)
+        assert (visible, hidden) == ([pr], [])
+        assert dead == {_URL: "snooze window elapsed"}
+
+    def test_unknown_head_resurfaces_as_dead(self):
         # Unknown must never read as "nothing to do": no oid, no hiding.
         pr = _pr(head_ref_oid="")
-        visible, hidden, spent = split_snoozed([pr], {_URL: "cafe123"})
-        assert (visible, hidden, spent) == ([pr], [], [_URL])
+        visible, hidden, dead = split_snoozed([pr], {_URL: _entry()}, _NOW)
+        assert (visible, hidden) == ([pr], [])
+        assert _URL in dead
 
-    def test_empty_stored_oid_resurfaces_as_spent(self):
+    def test_empty_stored_oid_resurfaces_as_dead(self):
         pr = _pr(head_ref_oid="")
-        visible, hidden, spent = split_snoozed([pr], {_URL: ""})
-        assert (visible, hidden, spent) == ([pr], [], [_URL])
+        visible, hidden, dead = split_snoozed([pr], {_URL: _entry(oid="")}, _NOW)
+        assert (visible, hidden) == ([pr], [])
+        assert _URL in dead
 
     def test_unsnoozed_pr_stays_visible(self):
         pr = _pr(head_ref_oid="cafe123")
-        visible, hidden, spent = split_snoozed(
-            [pr], {"https://github.com/x/y/pull/1": "cafe123"}
-        )
-        assert (visible, hidden, spent) == ([pr], [], [])
+        other = {"https://github.com/x/y/pull/1": _entry()}
+        visible, hidden, dead = split_snoozed([pr], other, _NOW)
+        assert (visible, hidden, dead) == ([pr], [], {})
 
-    def test_entry_for_absent_pr_is_not_spent(self):
-        # The PR may be closed or beyond the search cap; its snooze survives.
-        snoozes = {"https://github.com/x/y/pull/1": "cafe123"}
-        visible, hidden, spent = split_snoozed([], snoozes)
-        assert (visible, hidden, spent) == ([], [], [])
-        assert snoozes == {"https://github.com/x/y/pull/1": "cafe123"}
+    def test_live_entry_for_absent_pr_is_kept(self):
+        # The PR may be closed or beyond the search cap; its snooze survives
+        # while the window is open.
+        snoozes = {"https://github.com/x/y/pull/1": _entry()}
+        visible, hidden, dead = split_snoozed([], snoozes, _NOW)
+        assert (visible, hidden, dead) == ([], [], {})
+        assert snoozes == {"https://github.com/x/y/pull/1": _entry()}
+
+    def test_elapsed_entry_for_absent_pr_is_dead(self):
+        # A time-expired entry hides nothing; pruning it caps store growth.
+        snoozes = {"https://github.com/x/y/pull/1": _entry(hours=-1)}
+        visible, hidden, dead = split_snoozed([], snoozes, _NOW)
+        assert (visible, hidden) == ([], [])
+        assert dead == {"https://github.com/x/y/pull/1": "snooze window elapsed"}

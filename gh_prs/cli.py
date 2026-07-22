@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import Any
 
@@ -19,8 +20,11 @@ from gh_prs.gh import (
 )
 from gh_prs.snooze import (
     SnoozeError,
+    is_expired,
     load_snoozes,
+    make_entry,
     normalize_pr_url,
+    parse_duration,
     save_snoozes,
     split_snoozed,
 )
@@ -178,6 +182,11 @@ def _to_dict(pr: PullRequest) -> dict[str, Any]:
     }
 
 
+def _local(timestamp: str) -> str:
+    """An ISO timestamp rendered in the user's local timezone, minute precision."""
+    return datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
 def _run_snooze_action(args: argparse.Namespace, console: Console, err: Console) -> int:
     """Handle --snooze / --unsnooze / --snoozed; returns the exit code.
 
@@ -186,22 +195,31 @@ def _run_snooze_action(args: argparse.Namespace, console: Console, err: Console)
     """
     try:
         snoozes = load_snoozes()
+        now = datetime.now(UTC)
         if args.snoozed:
             if not snoozes:
                 console.print("[dim]No snoozed PRs.[/dim]")
-            for url, oid in sorted(snoozes.items()):
-                console.print(
-                    f"{escape(url)} [dim](until head moves off {oid[:12]})[/dim]"
-                )
+            for url, entry in sorted(snoozes.items()):
+                if is_expired(entry, now):
+                    detail = "expired"
+                else:
+                    detail = (
+                        f"until {_local(entry['until'])}, "
+                        f"or head moving off {entry['oid'][:12]}"
+                    )
+                console.print(f"{escape(url)} [dim]({detail})[/dim]")
             return 0
         if args.snooze is not None:
             url = normalize_pr_url(args.snooze)
+            # Validate the duration before spending a network round-trip.
+            duration = parse_duration(args.snooze_for)
             with err.status("Looking up PR…", spinner="dots"):
                 oid = fetch_pr_head(url)
-            snoozes[url] = oid
+            snoozes[url] = make_entry(oid, now, duration)
             save_snoozes(snoozes)
             console.print(
-                f"Snoozed {escape(url)} [dim](until head moves off {oid[:12]})[/dim]"
+                f"Snoozed {escape(url)} [dim](until "
+                f"{_local(snoozes[url]['until'])}, or sooner if its head moves)[/dim]"
             )
             return 0
         url = normalize_pr_url(args.unsnooze)
@@ -261,12 +279,24 @@ def main(argv: list[str] | None = None) -> int:
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument(
         "--snooze",
-        metavar="PR_URL",
-        help="hide a PR from the attention view until it gets new commits",
+        metavar="PR",
+        help="hide a PR (URL or owner/repo/number) from the attention view "
+        "for --for's duration, or until it gets new commits",
     )
-    actions.add_argument("--unsnooze", metavar="PR_URL", help="remove a PR's snooze")
+    actions.add_argument(
+        "--unsnooze",
+        metavar="PR",
+        help="remove a PR's snooze (URL or owner/repo/number)",
+    )
     actions.add_argument(
         "--snoozed", action="store_true", help="list snoozed PRs and exit"
+    )
+    parser.add_argument(
+        "--for",
+        dest="snooze_for",
+        default="24h",
+        metavar="DURATION",
+        help="with --snooze: how long to hide the PR (e.g. 12h, 3d, 1w; default 24h)",
     )
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
@@ -327,11 +357,15 @@ def main(argv: list[str] | None = None) -> int:
             warn(f"ignoring snoozes: {exc}")
             snoozes = {}
         if snoozes:
-            prs, hidden_snoozed, spent = split_snoozed(prs, snoozes)
-            for url in spent:
+            fetched = {pr.url for pr in prs}
+            prs, hidden_snoozed, dead = split_snoozed(prs, snoozes, datetime.now(UTC))
+            for url, why in sorted(dead.items()):
                 del snoozes[url]
-                warn(f"snooze expired ({url} moved since you snoozed it)")
-            if spent:
+                # Entries for absent PRs (closed, or beyond the search cap)
+                # are pruned quietly: nothing resurfaced.
+                if url in fetched:
+                    warn(f"snooze expired for {url} ({why})")
+            if dead:
                 try:
                     save_snoozes(snoozes)
                 except SnoozeError as exc:
