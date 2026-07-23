@@ -1,8 +1,11 @@
 [project]
 name = "gh-prs"
-version = "0.5.0"
+version = "0.6.0"
 description = "CLI for listing GitHub pull requests that need your attention, powered by gh CLI"
 readme = "README.md"
+authors = [{ name = "Denis Roussel", email = "deroussel@gmail.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "rich>=14.0.0",
