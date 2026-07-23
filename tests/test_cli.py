@@ -1,10 +1,13 @@
-"""CLI tests: qualifier selection, --count semantics, failure surfacing, escaping."""
+"""CLI tests: qualifier selection, --count semantics, failure surfacing, snoozing, escaping."""
+
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from rich.console import Console
 
 from gh_prs import cli
 from gh_prs.gh import GhError, PullRequest
+from gh_prs.snooze import load_snoozes, make_entry, save_snoozes, snooze_path
 
 
 def _pr(number: int, **overrides) -> PullRequest:
@@ -18,6 +21,13 @@ def _pr(number: int, **overrides) -> PullRequest:
         is_draft=False,
     )
     return PullRequest(number=number, **(defaults | overrides))
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """Point the snooze store at a temp dir so tests never read the user's."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    return tmp_path
 
 
 @pytest.fixture
@@ -183,3 +193,203 @@ class TestEscaping:
         pr = _pr(1, title="broken [/bold] title", attention_reasons={"review"})
         console = Console(no_color=True, force_terminal=False)
         cli._render_attention(console, [pr])  # must not raise MarkupError
+
+
+_SNOOZE_URL = "https://github.com/acme/widgets/pull/1"
+
+
+def _entry(oid: str = "cafe", hours: float = 24) -> dict[str, str]:
+    """A store entry expiring ``hours`` from now."""
+    return make_entry(oid, datetime.now(UTC), timedelta(hours=hours))
+
+
+class TestSnoozeFiltering:
+    def test_snoozed_pr_hidden_from_attention_view(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" not in captured.out
+        assert "1 snoozed PR(s) hidden" in captured.err
+
+    def test_moved_head_resurfaces_warns_and_prunes(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="beef", attention_reasons={"review"})
+        ]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "head moved" in captured.err
+        assert load_snoozes() == {}
+
+    def test_elapsed_window_resurfaces_warns_and_prunes(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        save_snoozes({_SNOOZE_URL: _entry("cafe", hours=-1)})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "window elapsed" in captured.err
+        assert load_snoozes() == {}
+
+    def test_elapsed_entry_for_absent_pr_prunes_quietly(self, fake_backend, capsys):
+        fake_backend["prs"] = []
+        save_snoozes({_SNOOZE_URL: _entry("cafe", hours=-1)})
+        assert cli.main(["--no-color"]) == 0
+        assert "snooze expired" not in capsys.readouterr().err
+        assert load_snoozes() == {}
+
+    def test_snoozed_pr_without_attention_reasons_not_counted_hidden(
+        self, fake_backend, capsys
+    ):
+        fake_backend["prs"] = [_pr(1, url=_SNOOZE_URL, head_ref_oid="cafe")]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--no-color"]) == 0
+        assert "snoozed PR(s) hidden" not in capsys.readouterr().err
+
+    def test_attention_count_respects_snooze_and_notes_it(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"}),
+            _pr(2, attention_reasons={"ready"}),
+        ]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--count"]) == 0
+        captured = capsys.readouterr()
+        # stdout stays pure for status bars; the hiding is reported on stderr.
+        assert captured.out.strip() == "1"
+        assert "1 snoozed PR(s) hidden" in captured.err
+
+    def test_review_view_ignores_snoozes(self, fake_backend, capsys):
+        # Explicit views must stay exact: the PR factually awaits review.
+        fake_backend["prs"] = [_pr(1, url=_SNOOZE_URL, head_ref_oid="cafe")]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["-r", "--no-color"]) == 0
+        assert "PR 1" in capsys.readouterr().out
+
+    def test_json_ignores_snoozes(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--json", "--no-color"]) == 0
+        assert _SNOOZE_URL in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "raw", [b"{not json", b'\xff\xfe{"a": 1}']
+    )  # invalid JSON / invalid UTF-8
+    def test_corrupt_store_warns_and_shows_everything(self, fake_backend, capsys, raw):
+        # Fail-safe direction: a broken store may only ever show more PRs.
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        path = snooze_path()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(raw)
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "ignoring snoozes" in captured.err
+
+
+class TestSnoozeActions:
+    def test_snooze_normalizes_url_and_records_head_oid(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        assert cli.main(["--snooze", f"{_SNOOZE_URL}/files?diff=split"]) == 0
+        entry = load_snoozes()[_SNOOZE_URL]
+        assert entry["oid"] == "cafe123"
+        assert "Snoozed" in capsys.readouterr().out
+
+    def test_snooze_defaults_to_24h_window(self, monkeypatch):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        assert cli.main(["--snooze", _SNOOZE_URL]) == 0
+        until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
+        remaining = until - datetime.now(UTC)
+        assert timedelta(hours=23) < remaining <= timedelta(hours=24)
+
+    def test_snooze_for_custom_duration(self, monkeypatch):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        assert cli.main(["--snooze", _SNOOZE_URL, "--for", "3d"]) == 0
+        until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
+        remaining = until - datetime.now(UTC)
+        assert timedelta(days=2, hours=23) < remaining <= timedelta(days=3)
+
+    def test_snooze_invalid_duration_errors_before_lookup(self, monkeypatch, capsys):
+        def boom(url):
+            raise AssertionError("fetch_pr_head must not run")
+
+        monkeypatch.setattr(cli, "fetch_pr_head", boom)
+        assert cli.main(["--snooze", _SNOOZE_URL, "--for", "soon"]) == 1
+        assert "invalid duration" in capsys.readouterr().err
+        assert load_snoozes() == {}
+
+    def test_snooze_accepts_shorthand(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        assert cli.main(["--snooze", "acme/widgets/1"]) == 0
+        assert _SNOOZE_URL in load_snoozes()
+        assert _SNOOZE_URL in capsys.readouterr().out
+
+    def test_snooze_lookup_failure_stores_nothing(self, monkeypatch, capsys):
+        def boom(url):
+            raise GhError("no such PR")
+
+        monkeypatch.setattr(cli, "fetch_pr_head", boom)
+        assert cli.main(["--snooze", _SNOOZE_URL]) == 1
+        assert load_snoozes() == {}
+        assert "no such PR" in capsys.readouterr().err
+
+    def test_snooze_rejects_non_pr_url(self, capsys):
+        assert cli.main(["--snooze", "https://github.com/acme/widgets"]) == 1
+        assert "not a pull request URL" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("flag", ["--snooze", "--unsnooze"])
+    def test_empty_url_is_a_clean_error_not_a_fetch(self, monkeypatch, flag, capsys):
+        # An empty (falsy) URL must still dispatch to the action and fail URL
+        # validation — not fall through to the fetch-and-render path.
+        def boom(qualifiers=None, on_warning=None):
+            raise AssertionError("fetch_prs must not run")
+
+        monkeypatch.setattr(cli, "fetch_prs", boom)
+        assert cli.main([flag, ""]) == 1
+        assert "not a pull request URL" in capsys.readouterr().err
+
+    def test_unsnooze_removes_entry(self, capsys):
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--unsnooze", _SNOOZE_URL]) == 0
+        assert load_snoozes() == {}
+        assert "Unsnoozed" in capsys.readouterr().out
+
+    def test_unsnooze_missing_entry_errors(self, capsys):
+        assert cli.main(["--unsnooze", _SNOOZE_URL]) == 1
+        assert "is not snoozed" in capsys.readouterr().err
+
+    def test_snoozed_lists_entries(self, capsys):
+        save_snoozes({_SNOOZE_URL: _entry("cafe123deadbeef")})
+        assert cli.main(["--snoozed", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert _SNOOZE_URL in out
+        assert "until" in out
+        assert "cafe123deadbe" not in out  # oid shown truncated to 12 chars
+        assert "cafe123deadb" in out
+
+    def test_snoozed_marks_expired_entries(self, capsys):
+        save_snoozes({_SNOOZE_URL: _entry("cafe", hours=-1)})
+        assert cli.main(["--snoozed", "--no-color"]) == 0
+        assert "expired" in capsys.readouterr().out
+
+    def test_snoozed_empty_store_says_so(self, capsys):
+        assert cli.main(["--snoozed", "--no-color"]) == 0
+        assert "No snoozed PRs" in capsys.readouterr().out
+
+    def test_corrupt_store_is_fatal_for_write_actions(self, monkeypatch, capsys):
+        # Writing through a corrupt store would clobber it.
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        path = snooze_path()
+        path.parent.mkdir(parents=True)
+        path.write_text("{not json")
+        assert cli.main(["--snooze", _SNOOZE_URL]) == 1
+        assert "Error:" in capsys.readouterr().err
+        assert path.read_text() == "{not json"

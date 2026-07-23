@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import Any
 
@@ -14,7 +15,18 @@ from gh_prs.gh import (
     GhError,
     PullRequest,
     count_prs,
+    fetch_pr_head,
     fetch_prs,
+)
+from gh_prs.snooze import (
+    SnoozeError,
+    is_expired,
+    load_snoozes,
+    make_entry,
+    normalize_pr_url,
+    parse_duration,
+    save_snoozes,
+    split_snoozed,
 )
 
 # Grouped sections for the default (attention) view, in display order.
@@ -170,6 +182,61 @@ def _to_dict(pr: PullRequest) -> dict[str, Any]:
     }
 
 
+def _local(timestamp: str) -> str:
+    """An ISO timestamp rendered in the user's local timezone, minute precision."""
+    return datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _run_snooze_action(args: argparse.Namespace, console: Console, err: Console) -> int:
+    """Handle --snooze / --unsnooze / --snoozed; returns the exit code.
+
+    A corrupt store is fatal here (writing would clobber it), unlike in the
+    attention view where it merely degrades to "nothing snoozed".
+    """
+    try:
+        snoozes = load_snoozes()
+        now = datetime.now(UTC)
+        if args.snoozed:
+            if not snoozes:
+                console.print("[dim]No snoozed PRs.[/dim]")
+            for url, entry in sorted(snoozes.items()):
+                if is_expired(entry, now):
+                    detail = "expired"
+                else:
+                    detail = (
+                        f"until {_local(entry['until'])}, "
+                        f"or head moving off {entry['oid'][:12]}"
+                    )
+                console.print(f"{escape(url)} [dim]({detail})[/dim]")
+            return 0
+        if args.snooze is not None:
+            url = normalize_pr_url(args.snooze)
+            # Validate the duration before spending a network round-trip.
+            duration = parse_duration(args.snooze_for)
+            with err.status("Looking up PR…", spinner="dots"):
+                oid = fetch_pr_head(url)
+            snoozes[url] = make_entry(oid, now, duration)
+            save_snoozes(snoozes)
+            console.print(
+                f"Snoozed {escape(url)} [dim](until "
+                f"{_local(snoozes[url]['until'])}, or sooner if its head moves)[/dim]"
+            )
+            return 0
+        url = normalize_pr_url(args.unsnooze)
+        if snoozes.pop(url, None) is None:
+            err.print(f"[red]Error:[/red] {escape(url)} is not snoozed")
+            return 1
+        save_snoozes(snoozes)
+        console.print(f"Unsnoozed {escape(url)}")
+        return 0
+    except (SnoozeError, GhError) as exc:
+        err.print(f"[red]Error:[/red] {exc}")
+        return 1
+    except KeyboardInterrupt:
+        err.print("[dim]Interrupted.[/dim]")
+        return 130
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="gh prs",
@@ -209,6 +276,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print only the number of PRs in the selected view (for status bars)",
     )
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument(
+        "--snooze",
+        metavar="PR",
+        help="hide a PR (URL or owner/repo/number) from the attention view "
+        "for --for's duration, or until it gets new commits",
+    )
+    actions.add_argument(
+        "--unsnooze",
+        metavar="PR",
+        help="remove a PR's snooze (URL or owner/repo/number)",
+    )
+    actions.add_argument(
+        "--snoozed", action="store_true", help="list snoozed PRs and exit"
+    )
+    parser.add_argument(
+        "--for",
+        dest="snooze_for",
+        default="24h",
+        metavar="DURATION",
+        help="with --snooze: how long to hide the PR (e.g. 12h, 3d, 1w; default 24h)",
+    )
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
     )
@@ -219,6 +308,11 @@ def main(argv: list[str] | None = None) -> int:
 
     console = Console(no_color=args.no_color, highlight=False)
     err = Console(stderr=True, no_color=args.no_color, highlight=False)
+
+    # "is not None", not truthiness: --snooze/--unsnooze "" must reach the
+    # action (and fail its URL validation), not fall through to the view.
+    if args.snooze is not None or args.unsnooze is not None or args.snoozed:
+        return _run_snooze_action(args, console, err)
 
     qualifiers, list_title, list_style = _VIEWS[args.view]
 
@@ -250,6 +344,40 @@ def main(argv: list[str] | None = None) -> int:
     if fast_count:
         print(count)
         return 0
+
+    # Only the attention view (table and --count, not --json) honors snoozes;
+    # explicit views (-c/-r/-a) and single-qualifier counts always show
+    # everything, so their numbers stay exact.
+    hidden_snoozed: list[PullRequest] = []
+    if args.view == "attention" and not args.json:
+        try:
+            snoozes = load_snoozes()
+        except SnoozeError as exc:
+            # Fail-safe direction: an unreadable store shows more, never less.
+            warn(f"ignoring snoozes: {exc}")
+            snoozes = {}
+        if snoozes:
+            fetched = {pr.url for pr in prs}
+            prs, hidden_snoozed, dead = split_snoozed(prs, snoozes, datetime.now(UTC))
+            for url, why in sorted(dead.items()):
+                del snoozes[url]
+                # Entries for absent PRs (closed, or beyond the search cap)
+                # are pruned quietly: nothing resurfaced.
+                if url in fetched:
+                    warn(f"snooze expired for {url} ({why})")
+            if dead:
+                try:
+                    save_snoozes(snoozes)
+                except SnoozeError as exc:
+                    warn(f"could not prune expired snoozes: {exc}")
+        # Hiding is never silent — even for --count, where the number a
+        # status bar shows would otherwise silently drop. Only
+        # attention-worthy PRs were actually withheld.
+        hidden = sum(pr.needs_attention() for pr in hidden_snoozed)
+        if hidden:
+            err.print(
+                f"[dim]{hidden} snoozed PR(s) hidden — 'gh prs --snoozed' to list[/dim]"
+            )
 
     if args.count:
         # In the default view "count" means PRs needing attention; the explicit

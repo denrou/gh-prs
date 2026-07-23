@@ -486,6 +486,49 @@ class TestCountPrs:
             gh.count_prs("author")
 
 
+class TestFetchPrHead:
+    """fetch_pr_head response validation (mocked _run_gh)."""
+
+    def test_happy_path_passes_url_through(self, monkeypatch):
+        calls: list[tuple] = []
+
+        def fake_run(*args):
+            calls.append(args)
+            return _completed('{"headRefOid": "cafe123"}')
+
+        monkeypatch.setattr(gh, "_run_gh", fake_run)
+        url = "https://github.com/acme/widgets/pull/42"
+        assert gh.fetch_pr_head(url) == "cafe123"
+        assert calls == [("pr", "view", url, "--json", "headRefOid")]
+
+    def test_nonzero_exit_raises_with_detail(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed("", returncode=1, stderr="no such PR")
+        )
+        with pytest.raises(GhError, match="no such PR"):
+            gh.fetch_pr_head("url")
+
+    def test_invalid_json_raises(self, monkeypatch):
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed("not json"))
+        with pytest.raises(GhError, match="invalid JSON"):
+            gh.fetch_pr_head("url")
+
+    def test_non_dict_payload_raises(self, monkeypatch):
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed("null"))
+        with pytest.raises(GhError, match="no headRefOid"):
+            gh.fetch_pr_head("url")
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["{}", '{"headRefOid": ""}', '{"headRefOid": null}', '{"headRefOid": 5}'],
+    )
+    def test_missing_or_invalid_oid_raises(self, monkeypatch, payload):
+        # A snooze recorded against an unknown head could hide newer work.
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="no headRefOid"):
+            gh.fetch_pr_head("url")
+
+
 class TestFetchPrs:
     """fetch_prs orchestration (mocked _search)."""
 

@@ -61,11 +61,36 @@ gh prs --json       # raw JSON (for scripting)
 gh prs --count      # print only the PR count for the selected view
                     # (attention count by default; handy for status bars)
 gh prs --no-color   # disable colored output
+
+gh prs --snooze PR    # hide a PR from the attention view for 24h
+gh prs --snooze PR --for 3d   # …or for a custom window (12h, 3d, 1w)
+gh prs --unsnooze PR  # remove a PR's snooze
+gh prs --snoozed      # list snoozed PRs
 ```
 
 `--count` exits non-zero when fetching fails, so status-bar scripts can tell
 "no PRs" apart from "the lookup broke". With `-c` or `-r` it uses a fast
 count-only query (well under a second) — ideal for frequent polling.
+
+### Snoozing
+
+Sometimes a PR legitimately needs _someone's_ attention but not yours — say a
+dependency bump routed to you through a team when a teammate is the natural
+reviewer. `gh prs --snooze <pr>` hides it from the default attention view.
+The PR can be a full URL or the github.com shorthand `owner/repo/123`
+(`owner/repo#123` also works; Enterprise hosts need the full URL).
+
+A snooze lasts 24 hours by default (`--for 12h`/`3d`/`1w` to change) and is
+also tied to the PR's head commit at snooze time: whichever comes first — the
+window elapsing or new commits landing — resurfaces the PR with a warning and
+drops the snooze, so you acknowledge a specific state for a bounded time,
+never future work. The attention view prints how many snoozed PRs it withheld
+on stderr — hiding is visible, never silent. Explicit views (`-c`/`-r`/`-a`),
+`--count` for those views, and `--json` ignore snoozes entirely, so scripts
+and exact counts are unaffected.
+
+Snoozes are stored locally in `~/.config/gh-prs/snooze.json` (honors
+`$XDG_CONFIG_HOME`); they never touch the PR on GitHub.
 
 For status bars, prefer the `uv tool install` binary (`~/.local/bin/gh-prs`)
 over `uv run` inside the repo — it skips ~250 ms of project resolution per
