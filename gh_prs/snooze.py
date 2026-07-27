@@ -35,10 +35,6 @@ class SnoozeError(Exception):
 # (".../pull/42abc") is a typo, and truncating it would snooze the wrong PR.
 _PR_URL = re.compile(r"^(https://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)(?=$|[/?#])")
 
-# github.com shorthand: owner/repo/123 or owner/repo#123. Anchored to exactly
-# three segments so full URLs never match. Enterprise hosts need the full URL.
-_PR_SHORTHAND = re.compile(r"^([^/\s#]+)/([^/\s#]+)[/#](\d+)$")
-
 _DURATION = re.compile(r"^(\d+)\s*([hdw])$")
 _DURATION_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 
@@ -64,22 +60,20 @@ def parse_duration(text: str) -> timedelta:
 
 
 def normalize_pr_url(ref: str) -> str:
-    """Canonicalize a PR reference to the URL GraphQL reports (`…/pull/<n>`).
+    """Canonicalize a full PR URL to the form GraphQL reports (`…/pull/<n>`).
 
-    Accepts a full PR URL (browser suffixes stripped) or the github.com
-    shorthand ``owner/repo/123`` / ``owner/repo#123``. Raises ``SnoozeError``
-    otherwise: storing a key that can never match a fetched PR's ``url``
-    would silently do nothing.
+    Browser suffixes (``/files``, ``?diff=split``, ``#discussion_r1``) are
+    stripped. Raises ``SnoozeError`` on anything that is not a full PR URL —
+    a bare PR number is resolved through ``gh`` instead (see ``cli``), and
+    storing a key that can never match a fetched PR's ``url`` would silently
+    do nothing.
     """
     ref = ref.strip()
-    shorthand = _PR_SHORTHAND.match(ref)
-    if shorthand:
-        owner, repo, number = shorthand.groups()
-        return f"https://github.com/{owner}/{repo}/pull/{number}"
     match = _PR_URL.match(ref)
     if not match:
         raise SnoozeError(
-            f"not a pull request URL or owner/repo/number reference: {ref!r}"
+            f"not a pull request URL: {ref!r} "
+            "(pass a PR number with --repo, or a full https://…/pull/<n> URL)"
         )
     return match.group(1)
 

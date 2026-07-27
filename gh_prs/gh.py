@@ -302,6 +302,43 @@ def fetch_pr_head(url: str) -> str:
     return oid
 
 
+def resolve_pr(ref: str, repo: str | None = None) -> tuple[str, str]:
+    """Resolve a PR reference to its ``(canonical url, head commit oid)``.
+
+    ``ref`` is anything ``gh pr view`` accepts — most usefully a bare PR
+    number, but also a full URL or branch name. ``repo`` (``owner/repo``, or
+    ``host/owner/repo``) scopes a bare number; when omitted, gh resolves the
+    repository from the current directory (git remotes, ``GH_REPO``) exactly
+    as every other gh command does. Delegating to gh means the returned url
+    carries the correct host, so enterprise instances work without any
+    host-specific URL construction here.
+
+    Raises ``GhError`` on any failure, including a missing url or oid in the
+    response: a snooze recorded against an unknown head could hide newer work.
+    """
+    args = ["pr", "view", ref, "--json", "url,headRefOid"]
+    if repo:
+        args += ["--repo", repo]
+    result = _run_gh(*args)
+    where = f" in {repo}" if repo else ""
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise GhError(f"Lookup of PR {ref}{where} failed: {detail}")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise GhError(f"Lookup of PR {ref}{where}: invalid JSON from gh: {e}") from e
+    if not isinstance(payload, dict):
+        raise GhError(f"Lookup of PR {ref}{where}: unexpected response from gh")
+    url = payload.get("url")
+    oid = payload.get("headRefOid")
+    if not isinstance(url, str) or not url:
+        raise GhError(f"Lookup of PR {ref}{where}: response has no url")
+    if not isinstance(oid, str) or not oid:
+        raise GhError(f"Lookup of PR {ref}{where}: response has no headRefOid")
+    return url, oid
+
+
 def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
     """Run one qualifier's search; return (viewer_login, PR nodes, issue_count).
 

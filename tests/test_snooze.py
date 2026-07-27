@@ -64,17 +64,17 @@ class TestNormalizePrUrl:
         url = "https://ghe.example.com/acme/widgets/pull/7"
         assert normalize_pr_url(url) == url
 
-    @pytest.mark.parametrize("shorthand", ["acme/widgets/42", "acme/widgets#42"])
-    def test_shorthand_expands_to_github_url(self, shorthand):
-        assert normalize_pr_url(shorthand) == _URL
-
     @pytest.mark.parametrize(
         "bad",
         [
             "",
             "acme/widgets",
             "acme/widgets/1a",
-            "acme/widgets/pull/42",  # four segments: neither shorthand nor URL
+            # The old owner/repo shorthands are gone: only a bare number
+            # (resolved via gh) or a full URL is accepted now.
+            "acme/widgets/42",
+            "acme/widgets#42",
+            "acme/widgets/pull/42",  # not a full URL
             "https://github.com/acme/widgets",
             "https://github.com/acme/widgets/issues/42",
             "http://github.com/acme/widgets/pull/42",  # only https is canonical

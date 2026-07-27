@@ -76,10 +76,11 @@ gh prs --count      # print only the PR count for the selected view
                     # (attention count by default; handy for status bars)
 gh prs --no-color   # disable colored output
 
-gh prs --snooze PR    # hide a PR from the attention view for 24h
-gh prs --snooze PR --for 3d   # …or for a custom window (12h, 3d, 1w)
-gh prs --unsnooze PR  # remove a PR's snooze
-gh prs --snoozed      # list snoozed PRs
+gh prs --snooze 123           # hide a PR (of the current repo) for 24h
+gh prs --snooze 123 -R o/r    # …of another repo (owner/repo)
+gh prs --snooze 12 34 --for 3d  # …several at once, for a custom window (12h, 3d, 1w)
+gh prs --unsnooze 123         # remove a PR's snooze
+gh prs --snoozed              # list snoozed PRs
 ```
 
 `--count` exits non-zero when fetching fails, so status-bar scripts can tell
@@ -90,9 +91,11 @@ count-only query (well under a second) — ideal for frequent polling.
 
 Sometimes a PR legitimately needs _someone's_ attention but not yours — say a
 dependency bump routed to you through a team when a teammate is the natural
-reviewer. `gh prs --snooze <pr>` hides it from the default attention view.
-The PR can be a full URL or the github.com shorthand `owner/repo/123`
-(`owner/repo#123` also works; Enterprise hosts need the full URL).
+reviewer. `gh prs --snooze <pr>...` hides one or more PRs from the default
+attention view. Reference a PR the way `gh` does: a bare number, scoped by
+`-R/--repo owner/repo` (or the repository of the current directory when
+omitted), or a full URL. Bare numbers are resolved through `gh`, so Enterprise
+hosts work too.
 
 A snooze lasts 24 hours by default (`--for 12h`/`3d`/`1w` to change) and is
 also tied to the PR's head commit at snooze time: whichever comes first — the
