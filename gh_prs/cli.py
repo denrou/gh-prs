@@ -53,6 +53,18 @@ _SECTIONS_WITH_AUTHOR = {"review", "new-commits"}
 # canonicalizes offline.
 _BARE_NUMBER = re.compile(r"^\d+$")
 
+# How long a snooze lasts when --for is not given.
+_DEFAULT_SNOOZE_FOR = "24h"
+
+# The flags the snooze/unsnooze subcommands replaced, each with the syntax to
+# suggest instead. Checked before argparse runs so the error is a migration
+# hint rather than a bare "unrecognized arguments".
+_REMOVED_FLAGS = {
+    "--snooze": "gh prs snooze <pr>...",
+    "--unsnooze": "gh prs unsnooze <pr>...",
+    "--snoozed": "gh prs snooze",
+}
+
 # Per-view configuration: search qualifiers, flat-list title, and its style.
 # The "attention" view renders grouped sections instead of a flat list.
 _VIEWS: dict[str, tuple[list[str], str, str]] = {
@@ -275,17 +287,17 @@ def _do_snooze(
     console: Console,
     err: Console,
 ) -> int:
-    """Snooze every PR in ``args.snooze``; return the exit code.
+    """Snooze every PR in ``args.refs``; return the exit code.
 
     Refs are resolved independently: a bad one is reported and skipped while
     the rest are snoozed (partial success exits non-zero). The store is
     written once, only if at least one ref resolved.
     """
     # Validate the duration up front so a typo fails before any network round-trip.
-    duration = parse_duration(args.snooze_for)
+    duration = parse_duration(args.snooze_for or _DEFAULT_SNOOZE_FOR)
     resolved: dict[str, str] = {}  # canonical url -> head oid
     failures: list[str] = []
-    for ref in args.snooze:
+    for ref in args.refs:
         try:
             with err.status(f"Looking up {escape(ref)}…", spinner="dots"):
                 url, oid = _ref_to_url_and_head(ref, args.repo)
@@ -321,14 +333,14 @@ def _do_unsnooze(
     console: Console,
     err: Console,
 ) -> int:
-    """Remove the snooze on every PR in ``args.unsnooze``; return the exit code.
+    """Remove the snooze on every PR in ``args.refs``; return the exit code.
 
     As with snoozing, refs are handled independently (a bad or not-snoozed one
     is reported and skipped) and the store is written once if anything changed.
     """
     removed: list[str] = []
     failures: list[str] = []
-    for ref in args.unsnooze:
+    for ref in args.refs:
         try:
             url = _ref_to_url(ref, args.repo)
         except (SnoozeError, GhError) as exc:
@@ -347,31 +359,41 @@ def _do_unsnooze(
     return 1 if failures else 0
 
 
-def _run_snooze_action(args: argparse.Namespace, console: Console, err: Console) -> int:
-    """Handle --snooze / --unsnooze / --snoozed; returns the exit code.
+def _list_snoozes(
+    snoozes: dict[str, SnoozeEntry], now: datetime, console: Console
+) -> int:
+    """Print the snooze store (the bare ``snooze`` subcommand)."""
+    if not snoozes:
+        console.print("[dim]No snoozed PRs.[/dim]")
+    for url, entry in sorted(snoozes.items()):
+        if is_expired(entry, now):
+            detail = "expired"
+        else:
+            detail = (
+                f"until {_local(entry['until'])}, "
+                f"or head moving off {entry['oid'][:12]}"
+            )
+        console.print(f"{escape(url)} [dim]({detail})[/dim]")
+    return 0
 
-    A corrupt store is fatal here (writing would clobber it), unlike in the
-    attention view where it merely degrades to "nothing snoozed".
+
+def _run_snooze_command(
+    args: argparse.Namespace, console: Console, err: Console
+) -> int:
+    """Handle the snooze/unsnooze subcommands; returns the exit code.
+
+    A corrupt store is fatal here (a write would clobber it, and the bare
+    listing must not show a half-parsed store), unlike in the attention view
+    where it merely degrades to "nothing snoozed".
     """
     try:
         snoozes = load_snoozes()
         now = datetime.now(UTC)
-        if args.snoozed:
-            if not snoozes:
-                console.print("[dim]No snoozed PRs.[/dim]")
-            for url, entry in sorted(snoozes.items()):
-                if is_expired(entry, now):
-                    detail = "expired"
-                else:
-                    detail = (
-                        f"until {_local(entry['until'])}, "
-                        f"or head moving off {entry['oid'][:12]}"
-                    )
-                console.print(f"{escape(url)} [dim]({detail})[/dim]")
-            return 0
-        if args.snooze is not None:
+        if args.command == "unsnooze":
+            return _do_unsnooze(args, snoozes, console, err)
+        if args.refs:
             return _do_snooze(args, snoozes, now, console, err)
-        return _do_unsnooze(args, snoozes, console, err)
+        return _list_snoozes(snoozes, now, console)
     except (SnoozeError, GhError) as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
@@ -381,6 +403,16 @@ def _run_snooze_action(args: argparse.Namespace, console: Console, err: Console)
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    for token in argv:
+        flag = token.split("=", 1)[0]
+        if flag in _REMOVED_FLAGS:
+            Console(stderr=True, highlight=False).print(
+                f"[red]Error:[/red] {flag} was replaced by a subcommand: "
+                f"try '{_REMOVED_FLAGS[flag]}' (see --help)"
+            )
+            return 2
+
     parser = argparse.ArgumentParser(
         prog="gh prs",
         description="List GitHub pull requests that need your attention.",
@@ -419,37 +451,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print only the number of PRs in the selected view (for status bars)",
     )
-    actions = parser.add_mutually_exclusive_group()
-    actions.add_argument(
-        "--snooze",
-        nargs="+",
-        metavar="PR",
-        help="hide one or more PRs (a number, or a full URL) from the "
-        "attention view for --for's duration, or until they get new commits",
-    )
-    actions.add_argument(
-        "--unsnooze",
-        nargs="+",
-        metavar="PR",
-        help="remove the snooze on one or more PRs (a number, or a full URL)",
-    )
-    actions.add_argument(
-        "--snoozed", action="store_true", help="list snoozed PRs and exit"
-    )
-    parser.add_argument(
-        "-R",
-        "--repo",
-        metavar="OWNER/REPO",
-        help="repository for bare PR numbers given to --snooze/--unsnooze "
-        "(default: the repository in the current directory)",
-    )
-    parser.add_argument(
-        "--for",
-        dest="snooze_for",
-        default="24h",
-        metavar="DURATION",
-        help="with --snooze: how long to hide the PRs (e.g. 12h, 3d, 1w; default 24h)",
-    )
     parser.add_argument(
         "--stale-after",
         dest="stale_after",
@@ -463,15 +464,85 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {version('gh-prs')}"
     )
+
+    # Flags shared by the subcommands. --no-color must also be accepted
+    # *after* the subcommand ("gh prs snooze 123 --no-color"); SUPPRESS keeps
+    # the subparser's default from clobbering a value the top-level flag
+    # already set on the shared namespace.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "-R",
+        "--repo",
+        metavar="OWNER/REPO",
+        help="repository for bare PR numbers "
+        "(default: the repository in the current directory)",
+    )
+    common.add_argument(
+        "--no-color",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="disable colored output",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="{snooze,unsnooze}")
+    snooze_cmd = commands.add_parser(
+        "snooze",
+        parents=[common],
+        help="hide PRs from the attention view (with no arguments: list snoozed PRs)",
+        description="Hide one or more PRs from the attention view for --for's "
+        "duration, or until they get new commits or their status changes. "
+        "With no PR arguments, list the snoozed PRs instead.",
+    )
+    snooze_cmd.add_argument(
+        "refs",
+        nargs="*",
+        metavar="PR",
+        help="a PR number (scoped by -R, or the current directory's repository) "
+        "or a full URL; omit to list snoozed PRs",
+    )
+    snooze_cmd.add_argument(
+        "--for",
+        dest="snooze_for",
+        metavar="DURATION",
+        help="how long to hide the PRs "
+        f"(e.g. 12h, 3d, 1w; default {_DEFAULT_SNOOZE_FOR})",
+    )
+    unsnooze_cmd = commands.add_parser(
+        "unsnooze",
+        parents=[common],
+        help="remove the snooze on one or more PRs",
+        description="Remove the snooze on one or more PRs.",
+    )
+    unsnooze_cmd.add_argument(
+        "refs",
+        nargs="+",
+        metavar="PR",
+        help="a PR number (scoped by -R, or the current directory's repository) "
+        "or a full URL",
+    )
+
     args = parser.parse_args(argv)
 
     console = Console(no_color=args.no_color, highlight=False)
     err = Console(stderr=True, no_color=args.no_color, highlight=False)
 
-    # "is not None", not truthiness: --snooze/--unsnooze "" must reach the
-    # action (and fail its URL validation), not fall through to the view.
-    if args.snooze is not None or args.unsnooze is not None or args.snoozed:
-        return _run_snooze_action(args, console, err)
+    if args.command:
+        # The view flags parse fine before a subcommand but don't apply to
+        # it; reject the mix instead of silently ignoring it.
+        if (
+            args.view != "attention"
+            or args.count
+            or args.json
+            or args.stale_after is not None
+        ):
+            err.print(
+                "[red]Error:[/red] -c/-r/-a, --count, --json and --stale-after "
+                f"do not apply to 'gh prs {args.command}'"
+            )
+            return 2
+        if args.command == "snooze" and args.snooze_for is not None and not args.refs:
+            err.print("[red]Error:[/red] --for requires at least one PR to snooze")
+            return 2
+        return _run_snooze_command(args, console, err)
 
     qualifiers, list_title, list_style = _VIEWS[args.view]
 
@@ -550,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
         hidden = sum(pr.needs_attention() for pr in hidden_snoozed)
         if hidden:
             err.print(
-                f"[dim]{hidden} snoozed PR(s) hidden — 'gh prs --snoozed' to list[/dim]"
+                f"[dim]{hidden} snoozed PR(s) hidden — 'gh prs snooze' to list[/dim]"
             )
 
     if args.count:
