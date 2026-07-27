@@ -113,6 +113,18 @@ class TestParseDuration:
         with pytest.raises(SnoozeError):
             parse_duration(bad)
 
+    def test_overflowing_duration_is_a_clean_error_not_a_crash(self):
+        # A syntactically valid but enormous value overflows timedelta; it must
+        # surface as SnoozeError, not escape as an uncaught OverflowError.
+        with pytest.raises(SnoozeError):
+            parse_duration("9" * 100 + "d")
+
+    def test_absurdly_long_digit_string_is_a_clean_error(self):
+        # Beyond CPython's int-string conversion limit int() raises ValueError;
+        # that too must degrade to SnoozeError.
+        with pytest.raises(SnoozeError):
+            parse_duration("9" * 5000 + "d")
+
 
 class TestStore:
     def test_missing_file_is_empty_store(self, tmp_path):

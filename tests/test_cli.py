@@ -6,7 +6,7 @@ import pytest
 from rich.console import Console
 
 from gh_prs import cli
-from gh_prs.gh import GhError, PullRequest
+from gh_prs.gh import DEFAULT_STALE_AFTER, GhError, PullRequest
 from gh_prs.snooze import load_snoozes, make_entry, save_snoozes, snooze_path
 
 
@@ -33,10 +33,11 @@ def isolated_config(tmp_path, monkeypatch):
 @pytest.fixture
 def fake_backend(monkeypatch):
     """Stub out fetch_prs; records the qualifiers requested."""
-    calls: dict = {"qualifiers": None, "prs": []}
+    calls: dict = {"qualifiers": None, "prs": [], "stale_after": "unset"}
 
-    def fake_fetch(qualifiers=None, on_warning=None):
+    def fake_fetch(qualifiers=None, on_warning=None, stale_after="unset"):
         calls["qualifiers"] = qualifiers
+        calls["stale_after"] = stale_after
         return calls["prs"]
 
     monkeypatch.setattr(cli, "fetch_prs", fake_fetch)
@@ -118,7 +119,7 @@ class TestCountSemantics:
 
 class TestFailureSurfacing:
     def test_fetch_error_prints_error_and_exits_nonzero(self, monkeypatch, capsys):
-        def boom(qualifiers=None, on_warning=None):
+        def boom(qualifiers=None, on_warning=None, stale_after=None):
             raise GhError("token expired")
 
         monkeypatch.setattr(cli, "fetch_prs", boom)
@@ -165,11 +166,84 @@ class TestJsonOutput:
         assert out.index('"author"') < out.index('"review-requested"')
 
 
+class TestStaleThreshold:
+    """--stale-after and config.json resolve the 'stale' nudge threshold."""
+
+    def _write_config(self, tmp_path, body):
+        path = tmp_path / "gh-prs" / "config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    def test_default_is_config_default(self, fake_backend):
+        assert cli.main([]) == 0
+        assert fake_backend["stale_after"] == DEFAULT_STALE_AFTER
+
+    def test_flag_overrides_default(self, fake_backend):
+        assert cli.main(["--stale-after", "5d"]) == 0
+        assert fake_backend["stale_after"] == timedelta(days=5)
+
+    def test_config_file_value_used(self, fake_backend, isolated_config):
+        self._write_config(isolated_config, '{"stale_after": "1w"}')
+        assert cli.main([]) == 0
+        assert fake_backend["stale_after"] == timedelta(weeks=1)
+
+    def test_flag_beats_config_file(self, fake_backend, isolated_config):
+        self._write_config(isolated_config, '{"stale_after": "1w"}')
+        assert cli.main(["--stale-after", "2d"]) == 0
+        assert fake_backend["stale_after"] == timedelta(days=2)
+
+    def test_config_null_disables_nudge(self, fake_backend, isolated_config):
+        self._write_config(isolated_config, '{"stale_after": null}')
+        assert cli.main([]) == 0
+        assert fake_backend["stale_after"] is None
+
+    def test_bad_flag_is_a_hard_error(self, fake_backend, capsys):
+        assert cli.main(["--stale-after", "soon"]) == 1
+        assert "invalid duration" in capsys.readouterr().err
+        # It failed before fetching.
+        assert fake_backend["stale_after"] == "unset"
+
+    def test_corrupt_config_warns_and_uses_default(
+        self, fake_backend, isolated_config, capsys
+    ):
+        self._write_config(isolated_config, "{not json")
+        assert cli.main([]) == 0
+        assert fake_backend["stale_after"] == DEFAULT_STALE_AFTER
+        assert "ignoring config" in capsys.readouterr().err
+
+    def test_overflowing_flag_is_a_hard_error(self, fake_backend, capsys):
+        # An enormous --stale-after must fail cleanly (exit 1) before fetching,
+        # not crash with an uncaught OverflowError.
+        assert cli.main(["--stale-after", "9" * 100 + "d"]) == 1
+        assert "invalid duration" in capsys.readouterr().err
+        assert fake_backend["stale_after"] == "unset"
+
+    def test_fast_count_never_reads_config(
+        self, monkeypatch, fake_backend, isolated_config, capsys
+    ):
+        # The -c/-r --count status-bar path must stay exact and quiet: a
+        # corrupt config.json must not even be consulted there, so no warning
+        # can ever leak into a status bar.
+        self._write_config(isolated_config, "{not json")
+        loaded: list[int] = []
+        real_load = cli.load_config
+        monkeypatch.setattr(
+            cli,
+            "load_config",
+            lambda *a, **k: (loaded.append(1), real_load(*a, **k))[1],
+        )
+        monkeypatch.setattr(cli, "count_prs", lambda q: 0)
+        assert cli.main(["-c", "--count"]) == 0
+        assert loaded == []  # config never consulted on the fast path
+        # No config warning leaks (the spinner's own cursor codes aside).
+        assert "config" not in capsys.readouterr().err
+
+
 class TestAttentionRendering:
     def test_every_attention_reason_has_a_section(self):
         # A reason without a section would count toward --count yet never
         # render — the PR would be invisible while "needing attention".
-        emittable = {"review", "new-commits", "ready", "ci-failed", "conflict"}
+        emittable = {"review", "new-commits", "ready", "ci-failed", "conflict", "stale"}
         assert emittable == {reason for reason, _, _ in cli._SECTIONS}
 
     def test_new_commits_section_renders_with_author(self):
@@ -180,6 +254,16 @@ class TestAttentionRendering:
         out = capture.get()
         assert "New commits since your review" in out
         assert "octocat" in out
+
+    def test_stale_section_renders_without_author(self):
+        # 'stale' PRs are my own, so the section omits the author column.
+        pr = _pr(1, attention_reasons={"stale"}, author="octocat")
+        console = Console(no_color=True, force_terminal=False, width=200)
+        with console.capture() as capture:
+            cli._render_attention(console, [pr])
+        out = capture.get()
+        assert "Waiting on review — time to nudge" in out
+        assert "octocat" not in out
 
 
 class TestEscaping:

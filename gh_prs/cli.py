@@ -11,8 +11,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from gh_prs.config import ConfigError, load_config
 from gh_prs.gh import (
     ALL_QUALIFIERS,
+    DEFAULT_STALE_AFTER,
     GhError,
     PullRequest,
     count_prs,
@@ -39,6 +41,7 @@ _SECTIONS = [
     ("ready", "Ready to ship", "bold green"),
     ("ci-failed", "CI failed", "bold red"),
     ("conflict", "Conflicts to resolve", "bold yellow"),
+    ("stale", "Waiting on review — time to nudge", "bold blue"),
 ]
 
 # Sections listing other people's PRs show the author column.
@@ -396,6 +399,13 @@ def main(argv: list[str] | None = None) -> int:
         help="with --snooze: how long to hide the PRs (e.g. 12h, 3d, 1w; default 24h)",
     )
     parser.add_argument(
+        "--stale-after",
+        dest="stale_after",
+        metavar="DURATION",
+        help="flag PRs you created that have gone this long without activity "
+        "while still awaiting review (e.g. 3d, 1w; default 3d, overrides config.json)",
+    )
+    parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
     )
     parser.add_argument(
@@ -423,6 +433,25 @@ def main(argv: list[str] | None = None) -> int:
     # needs full data (attention reasons); -a needs de-duplication.
     fast_count = args.count and len(qualifiers) == 1
 
+    # Resolve the staleness threshold for the 'stale' nudge: an explicit
+    # --stale-after overrides the config file, which falls back to the 3-day
+    # default. A bad flag value is a hard error (explicit user input); a bad
+    # config file only warns and uses the default (fail-safe: keep working).
+    # The fast-count path never computes attention reasons, so skip it there.
+    stale_after = None
+    if not fast_count:
+        try:
+            stale_after = load_config().stale_after
+        except ConfigError as exc:
+            warn(f"ignoring config: {exc}")
+            stale_after = DEFAULT_STALE_AFTER
+        if args.stale_after is not None:
+            try:
+                stale_after = parse_duration(args.stale_after)
+            except SnoozeError as exc:
+                err.print(f"[red]Error:[/red] {exc}")
+                return 1
+
     prs: list[PullRequest] = []
     count = 0
     try:
@@ -430,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
             if fast_count:
                 count = count_prs(qualifiers[0])
             else:
-                prs = fetch_prs(qualifiers, on_warning=warn)
+                prs = fetch_prs(qualifiers, on_warning=warn, stale_after=stale_after)
     except GhError as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
