@@ -170,6 +170,39 @@ class TestStore:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         assert snooze_path() == tmp_path / "gh-prs" / "snooze.json"
 
+    def test_entry_with_reasons_roundtrips(self, tmp_path):
+        path = tmp_path / "snooze.json"
+        entry = make_entry("cafe", _NOW, timedelta(hours=24), ["review"])
+        save_snoozes({_URL: entry}, path)
+        assert load_snoozes(path) == {_URL: entry}
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            '{"url": {"oid": "cafe", "until": "t", "reasons": "review"}}',  # not a list
+            '{"url": {"oid": "cafe", "until": "t", "reasons": [1]}}',  # not strings
+        ],
+    )
+    def test_wrong_reasons_shape_raises(self, tmp_path, raw):
+        path = tmp_path / "snooze.json"
+        path.write_text(raw)
+        with pytest.raises(SnoozeError):
+            load_snoozes(path)
+
+
+class TestMakeEntry:
+    def test_reasons_stored_sorted(self):
+        entry = make_entry("cafe", _NOW, timedelta(hours=1), ["review", "conflict"])
+        assert entry["reasons"] == ["conflict", "review"]
+
+    def test_no_reasons_omits_key(self):
+        assert "reasons" not in make_entry("cafe", _NOW, timedelta(hours=1))
+
+    def test_empty_reasons_kept_distinct_from_absent(self):
+        # [] means "captured, had none" — a later non-empty set must differ
+        # from it — so the key is present, unlike the None (absent) case.
+        assert make_entry("cafe", _NOW, timedelta(hours=1), [])["reasons"] == []
+
 
 class TestIsExpired:
     def test_future_timestamp_is_live(self):

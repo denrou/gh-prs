@@ -133,14 +133,21 @@ is a hard error (explicit user input); a bad config file only warns.
 
 ### Snoozing (`snooze.py`, applied in `cli.py`)
 
-`--snooze <pr>...` records each PR's head oid plus an expiry timestamp
-(default 24h, `--for 12h/3d/1w`); the default attention view (table and
-`--count`) then hides the PR while _both_ hold: head unchanged and window
-open. The same fail-safe direction as everywhere else applies: an unknown
-oid, an uncomparable timestamp, a moved head, an elapsed window, or an
-unreadable store all _show_ the PR (a corrupt store only warns on the view
-path, but is fatal for `--snooze`/`--unsnooze`, which must not clobber the
-file). Dead entries are pruned — with an on-stderr "snooze expired" warning
+`--snooze <pr>...` records each PR's head oid, an expiry timestamp
+(default 24h, `--for 12h/3d/1w`), and the PR's `attention_reasons` at snooze
+time (a sorted list; captured by fetching the attention view once, and
+omitted when the PR isn't in it or the fetch fails); the default attention
+view (table and `--count`) then hides the PR while _all_ hold: head
+unchanged, window open, and — when reasons were captured — the reason set
+unchanged. The reason check is what lets a PR snoozed while waiting for
+review resurface once it's reviewed and becomes yours to merge, even though
+its head never moved. The same fail-safe direction as everywhere else
+applies: an unknown oid, an uncomparable timestamp, a moved head, a changed
+reason set, an elapsed window, or an unreadable store all _show_ the PR (a
+corrupt store only warns on the view path, but is fatal for
+`--snooze`/`--unsnooze`, which must not clobber the file). Entries written
+before reason-tracking (no `reasons` key) keep working on head-and-window
+alone. Dead entries are pruned — with an on-stderr "snooze expired" warning
 when the PR actually resurfaced — and the view reports how many
 attention-worthy PRs it withheld. Explicit views (`-c`/`-r`/`-a`), fast
 counts, and `--json` never consult the store — their output stays exact.
