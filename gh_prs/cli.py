@@ -3,7 +3,7 @@
 import argparse
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from typing import Any
 
@@ -23,6 +23,7 @@ from gh_prs.gh import (
     resolve_pr,
 )
 from gh_prs.snooze import (
+    SnoozeEntry,
     SnoozeError,
     is_expired,
     load_snoozes,
@@ -224,9 +225,52 @@ def _ref_to_url_and_head(ref: str, repo: str | None) -> tuple[str, str]:
     return url, fetch_pr_head(url)
 
 
+def _config_stale_after(err: Console) -> timedelta | None:
+    """The persisted staleness threshold from config.json (or the default on a
+    config error; ``None`` when the user disabled the 'stale' nudge).
+
+    The view may override this per-invocation with ``--stale-after``; snooze
+    capture deliberately uses only this persisted value, so a captured 'stale'
+    reason matches what later (unflagged) views will compute for the PR.
+    """
+    try:
+        return load_config().stale_after
+    except ConfigError as exc:
+        err.print(f"[yellow]Warning:[/yellow] ignoring config: {exc}")
+        return DEFAULT_STALE_AFTER
+
+
+def _attention_reasons_by_url(
+    err: Console, stale_after: timedelta | None
+) -> dict[str, list[str]]:
+    """Map each attention-view PR to its current reasons, for snooze capture.
+
+    ``stale_after`` must be the same threshold later views will use (see
+    ``_config_stale_after``) so a captured 'stale' reason doesn't spuriously
+    differ from the rendered one and defeat the snooze on the next run.
+
+    Best-effort: a lookup failure degrades to an empty map (the snooze still
+    records head + window, just without reason-change invalidation) rather
+    than aborting the snooze. Only PRs the attention searches return appear —
+    a PR snoozed by an unrelated URL simply gets no reasons.
+    """
+    qualifiers = _VIEWS["attention"][0]
+
+    def warn(msg: str) -> None:
+        err.print(f"[yellow]Warning:[/yellow] {msg}")
+
+    try:
+        with err.status("Reading attention state…", spinner="dots"):
+            prs = fetch_prs(qualifiers, on_warning=warn, stale_after=stale_after)
+    except GhError as exc:
+        warn(f"could not read attention state ({exc}); snoozing without it")
+        return {}
+    return {pr.url: sorted(pr.attention_reasons) for pr in prs}
+
+
 def _do_snooze(
     args: argparse.Namespace,
-    snoozes: dict[str, dict[str, str]],
+    snoozes: dict[str, SnoozeEntry],
     now: datetime,
     console: Console,
     err: Console,
@@ -249,14 +293,22 @@ def _do_snooze(
             failures.append(f"{ref}: {exc}")
             continue
         resolved[url] = oid
+    # Capture each resolved PR's current attention reasons so the snooze also
+    # lapses when they change — e.g. a review lands and a waiting PR becomes
+    # ready to merge — not only when its head moves. Only worth a fetch once
+    # at least one ref resolved.
+    reasons_by_url = (
+        _attention_reasons_by_url(err, _config_stale_after(err)) if resolved else {}
+    )
     for url, oid in resolved.items():
-        snoozes[url] = make_entry(oid, now, duration)
+        snoozes[url] = make_entry(oid, now, duration, reasons_by_url.get(url))
     if resolved:
         save_snoozes(snoozes)
         for url in resolved:
             console.print(
                 f"Snoozed {escape(url)} [dim](until "
-                f"{_local(snoozes[url]['until'])}, or sooner if its head moves)[/dim]"
+                f"{_local(snoozes[url]['until'])}, or sooner if its head moves "
+                "or its status changes)[/dim]"
             )
     for failure in failures:
         err.print(f"[red]Error:[/red] {escape(failure)}")
@@ -265,7 +317,7 @@ def _do_snooze(
 
 def _do_unsnooze(
     args: argparse.Namespace,
-    snoozes: dict[str, dict[str, str]],
+    snoozes: dict[str, SnoozeEntry],
     console: Console,
     err: Console,
 ) -> int:
@@ -440,11 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     # The fast-count path never computes attention reasons, so skip it there.
     stale_after = None
     if not fast_count:
-        try:
-            stale_after = load_config().stale_after
-        except ConfigError as exc:
-            warn(f"ignoring config: {exc}")
-            stale_after = DEFAULT_STALE_AFTER
+        stale_after = _config_stale_after(err)
         if args.stale_after is not None:
             try:
                 stale_after = parse_duration(args.stale_after)

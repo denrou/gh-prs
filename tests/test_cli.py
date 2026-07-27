@@ -298,6 +298,55 @@ class TestSnoozeFiltering:
         assert "PR 1" not in captured.out
         assert "1 snoozed PR(s) hidden" in captured.err
 
+    def test_reason_change_resurfaces_warns_and_prunes(self, fake_backend, capsys):
+        # Snoozed while waiting for review; now approved and ready to merge —
+        # the head never moved, so only the reason change can resurface it.
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"ready"})
+        ]
+        save_snoozes(
+            {
+                _SNOOZE_URL: make_entry(
+                    "cafe", datetime.now(UTC), timedelta(hours=24), ["review"]
+                )
+            }
+        )
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        # The warning line wraps at the console width, so match a word that
+        # only the reason-change path emits rather than the whole phrase.
+        assert "changed" in captured.err
+        assert load_snoozes() == {}
+
+    def test_unchanged_reasons_stay_hidden(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        save_snoozes(
+            {
+                _SNOOZE_URL: make_entry(
+                    "cafe", datetime.now(UTC), timedelta(hours=24), ["review"]
+                )
+            }
+        )
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" not in captured.out
+        assert "1 snoozed PR(s) hidden" in captured.err
+
+    def test_legacy_entry_without_reasons_ignores_reason_change(
+        self, fake_backend, capsys
+    ):
+        # An entry written before reason-tracking has no "reasons" key; it must
+        # keep working on head+window alone and never resurface on a reason change.
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"ready"})
+        ]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--no-color"]) == 0
+        assert "PR 1" not in capsys.readouterr().out
+
     def test_moved_head_resurfaces_warns_and_prunes(self, fake_backend, capsys):
         fake_backend["prs"] = [
             _pr(1, url=_SNOOZE_URL, head_ref_oid="beef", attention_reasons={"review"})
@@ -380,6 +429,18 @@ class TestSnoozeFiltering:
 
 
 class TestSnoozeActions:
+    @pytest.fixture(autouse=True)
+    def stub_attention_fetch(self, monkeypatch):
+        """--snooze fetches the attention view to capture reasons; stub it so
+        these tests neither hit the network nor need a live gh. Individual
+        tests override cli.fetch_prs to exercise reason capture.
+        """
+        monkeypatch.setattr(
+            cli,
+            "fetch_prs",
+            lambda qualifiers=None, on_warning=None, stale_after=None: [],
+        )
+
     def test_snooze_normalizes_url_and_records_head_oid(self, monkeypatch, capsys):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
         assert cli.main(["--snooze", f"{_SNOOZE_URL}/files?diff=split"]) == 0
@@ -487,6 +548,30 @@ class TestSnoozeActions:
         )
         assert set(load_snoozes()) == {_SNOOZE_URL}
         assert "not a pull request URL" in capsys.readouterr().err
+
+    def test_snooze_captures_attention_reasons(self, monkeypatch):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        monkeypatch.setattr(
+            cli,
+            "fetch_prs",
+            lambda qualifiers=None, on_warning=None, stale_after=None: [
+                _pr(
+                    1,
+                    url=_SNOOZE_URL,
+                    head_ref_oid="cafe123",
+                    attention_reasons={"review"},
+                )
+            ],
+        )
+        assert cli.main(["--snooze", _SNOOZE_URL]) == 0
+        assert load_snoozes()[_SNOOZE_URL]["reasons"] == ["review"]
+
+    def test_snooze_absent_pr_records_no_reasons(self, monkeypatch):
+        # The autouse stub returns no PRs, so there are no reasons to attach;
+        # the entry falls back to the head-and-window rule alone.
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        assert cli.main(["--snooze", _SNOOZE_URL]) == 0
+        assert "reasons" not in load_snoozes()[_SNOOZE_URL]
 
     def test_unsnooze_removes_entry(self, capsys):
         save_snoozes({_SNOOZE_URL: _entry("cafe")})

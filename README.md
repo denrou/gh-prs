@@ -108,8 +108,10 @@ omitted), or a full URL. Bare numbers are resolved through `gh`, so Enterprise
 hosts work too.
 
 A snooze lasts 24 hours by default (`--for 12h`/`3d`/`1w` to change) and is
-also tied to the PR's head commit at snooze time: whichever comes first — the
-window elapsing or new commits landing — resurfaces the PR with a warning and
+also tied to the PR's state at snooze time: its head commit _and_ the reasons
+it needs your attention. Whichever comes first — the window elapsing, new
+commits landing, or those reasons changing (say a review lands and a PR that
+was waiting is now yours to merge) — resurfaces the PR with a warning and
 drops the snooze, so you acknowledge a specific state for a bounded time,
 never future work. The attention view prints how many snoozed PRs it withheld
 on stderr — hiding is visible, never silent. Explicit views (`-c`/`-r`/`-a`),
