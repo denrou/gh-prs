@@ -34,6 +34,20 @@ By default it shows only the PRs that need your attention:
 
 ## Install
 
+With [Homebrew](https://brew.sh/):
+
+```bash
+brew install denrou/gh-prs/gh-prs
+```
+
+Or from [PyPI](https://pypi.org/project/gh-prs/):
+
+```bash
+uv tool install gh-prs
+```
+
+Or straight from the repository:
+
 ```bash
 uv tool install gh-prs --from git+https://github.com/denrou/gh-prs.git
 ```
