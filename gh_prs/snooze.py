@@ -47,16 +47,26 @@ def snooze_path() -> Path:
 def parse_duration(text: str) -> timedelta:
     """Parse a snooze duration like ``12h``, ``3d``, or ``1w``.
 
-    Raises ``SnoozeError`` on anything else (including zero: a snooze that
-    never hides anything is a typo, not a request).
+    Raises ``SnoozeError`` on anything else — malformed input, zero (a snooze
+    that never hides anything is a typo, not a request), and durations too
+    large to represent. A value with enough digits overflows ``timedelta``
+    (``OverflowError``) or trips CPython's int-string conversion limit
+    (``ValueError``); both are converted here so every caller sees the one
+    error type it already handles and a bad duration can never escape as an
+    uncaught crash — same fail-safe direction as the rest of the store.
     """
+    msg = f"invalid duration {text!r} (use a positive number of hours, days, or weeks: e.g. 12h, 3d, 1w)"
     match = _DURATION.match(text.strip().lower())
-    if not match or not int(match.group(1)):
-        raise SnoozeError(
-            f"invalid duration {text!r} (use a positive number of hours, days, or weeks: e.g. 12h, 3d, 1w)"
-        )
+    if not match:
+        raise SnoozeError(msg)
     amount, unit = match.groups()
-    return timedelta(**{_DURATION_UNITS[unit]: int(amount)})
+    try:
+        value = int(amount)
+        if not value:
+            raise SnoozeError(msg)
+        return timedelta(**{_DURATION_UNITS[unit]: value})
+    except (ValueError, OverflowError) as e:
+        raise SnoozeError(msg) from e
 
 
 def normalize_pr_url(ref: str) -> str:

@@ -17,15 +17,20 @@ uv add --dev <pkg>          # Add dev dependency
 
 ## Architecture
 
-Three-module design inside `gh_prs/`:
+Four-module design inside `gh_prs/`:
 
 - **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
   existing `gh auth` session. Exposes a `PullRequest` dataclass plus
-  `fetch_prs()`, `count_prs()`, `fetch_pr_head()`, `ALL_QUALIFIERS`, and the
-  `GhError` exception.
+  `fetch_prs()`, `count_prs()`, `fetch_pr_head()`, `ALL_QUALIFIERS`,
+  `DEFAULT_STALE_AFTER`, and the `GhError` exception.
 - **`snooze.py`** — Local per-PR snooze store (`{PR url: {oid, until}}` JSON
   at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
   no `gh` calls. Raises `SnoozeError`.
+- **`config.py`** — Human-authored settings (`{stale_after}` JSON at
+  `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from the
+  machine-managed snooze store so a hand-edit can't corrupt snooze state.
+  Reuses `snooze.parse_duration`; missing file → defaults; raises
+  `ConfigError`.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
 
@@ -100,6 +105,31 @@ A non-draft PR needs attention when any of these hold:
 - **ci-failed** — you authored it and a check is failing.
 - **conflict** — you authored it and it has merge conflicts (independent of
   `ci-failed`; a PR can have both).
+- **stale** — a soft nudge: you authored it, it's still awaiting review (not
+  yet `APPROVED`, and not `CHANGES_REQUESTED` — the author isn't reworking
+  it), nothing else actionable fired (`not reasons`, so no `ready`/`ci-failed`
+  /`conflict`), and it has gone untouched (`updatedAt`) longer than the
+  staleness threshold — time to ping the reviewers. The threshold is
+  `DEFAULT_STALE_AFTER` (3 days), overridable via `config.json`'s
+  `stale_after` or the `--stale-after` flag. This reason is the one place
+  that **inverts** the house fail-safe: `_is_stale` treats a missing /
+  unparseable / naive `updatedAt` as _not_ stale, because a nudge is additive
+  and non-actionable — defaulting an unknown age to "stale" would fabricate a
+  reason on a possibly-fresh PR. Disabled entirely when `stale_after` is
+  `None` (config `null`) or `now`/`stale_after` aren't passed to
+  `_attention_reasons` (so a bare `_attention_reasons(pr)` never returns it).
+
+### Configuration (`config.py`, applied in `cli.py`)
+
+User settings live in `$XDG_CONFIG_HOME/gh-prs/config.json`, separate from the
+machine-managed `snooze.json` (opposite fail-safe needs; a hand-edit must not
+be able to corrupt snooze state). Today the only key is `stale_after` — a
+duration string (`"3d"`, `"1w"`) parsed by `snooze.parse_duration`, or `null`
+to disable the **stale** nudge. Only the view path reads it, and it degrades
+to defaults with an on-stderr warning on any error (the tool never writes it,
+so there is nothing to clobber). Resolution order for the threshold:
+`--stale-after` flag → `config.json` → `DEFAULT_STALE_AFTER`. A bad flag value
+is a hard error (explicit user input); a bad config file only warns.
 
 ### Snoozing (`snooze.py`, applied in `cli.py`)
 

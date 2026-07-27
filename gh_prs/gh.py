@@ -6,11 +6,17 @@ import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
 class GhError(RuntimeError):
     """A gh CLI invocation failed (missing binary, auth, network, bad output)."""
+
+
+# Default silence before an authored PR still awaiting review is flagged
+# 'stale' (a nudge to ping the reviewers). Overridable via config / CLI.
+DEFAULT_STALE_AFTER = timedelta(days=3)
 
 
 # C0 control characters, DEL, and C1 controls (U+0080–U+009F). Rich strips
@@ -368,6 +374,7 @@ def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
 def fetch_prs(
     qualifiers: list[str] | None = None,
     on_warning: Callable[[str], None] | None = None,
+    stale_after: timedelta | None = DEFAULT_STALE_AFTER,
 ) -> list[PullRequest]:
     """Fetch open PRs the current user is involved with, fully enriched.
 
@@ -380,6 +387,9 @@ def fetch_prs(
     mergeability, CI rollup, latest reviews, and review requests. Archived
     repos are excluded by the search filter. Each PR's ``attention_reasons``
     is computed before returning.
+
+    ``stale_after`` is the silence threshold for the 'stale' nudge on
+    authored PRs still awaiting review; ``None`` disables that reason.
 
     ``on_warning`` (if given) receives a message when a search matched more
     PRs than the cap, and when a PR matched by ``reviewed-by`` carries no
@@ -446,8 +456,9 @@ def fetch_prs(
                 pr.roles.add(qualifier)
                 seen[pr.id] = pr
 
+    now = datetime.now(UTC)
     for pr in seen.values():
-        pr.attention_reasons = _attention_reasons(pr)
+        pr.attention_reasons = _attention_reasons(pr, now=now, stale_after=stale_after)
         # The reviewed-by search positively asserts I reviewed this PR; an
         # empty my_review_state therefore means the latestReviews 50-node cap
         # hid my review — a contradiction that would otherwise silently
@@ -465,10 +476,36 @@ def fetch_prs(
     return sorted(seen.values(), key=lambda p: p.updated_at, reverse=True)
 
 
-def _attention_reasons(pr: PullRequest) -> set[str]:
+def _is_stale(updated_at: str, now: datetime, stale_after: timedelta) -> bool:
+    """True when ``updated_at`` is older than ``stale_after`` relative to ``now``.
+
+    The fail direction is deliberately the opposite of everywhere else in this
+    module: a missing, unparseable, or naive timestamp returns False (no
+    nudge), not True. The 'stale' reason is additive and non-actionable —
+    defaulting an unknown age to 'stale' would fabricate a reason on a
+    possibly-fresh PR and cry wolf, so uncertainty stays quiet here rather
+    than showing. ``now`` must be timezone-aware.
+    """
+    try:
+        updated = datetime.fromisoformat(updated_at)
+    except ValueError, TypeError:
+        return False
+    if updated.tzinfo is None:
+        return False
+    return now - updated >= stale_after
+
+
+def _attention_reasons(
+    pr: PullRequest,
+    now: datetime | None = None,
+    stale_after: timedelta | None = None,
+) -> set[str]:
     """Compute why an enriched PR needs the current user's attention.
 
-    Pure function of the PR's enriched fields. Drafts never need attention.
+    Pure function of the PR's enriched fields plus the clock. Drafts never
+    need attention. The 'stale' nudge only fires when both ``now`` and
+    ``stale_after`` are supplied; omitting either disables it (so a bare
+    ``_attention_reasons(pr)`` never returns 'stale').
     """
     if pr.is_draft:
         return set()
@@ -535,5 +572,21 @@ def _attention_reasons(pr: PullRequest) -> set[str]:
             and pr.mergeable == "MERGEABLE"
         ):
             reasons.add("ready")
+
+        # A soft nudge for a PR that is simply waiting on reviewers, too long:
+        # nothing above fired (so there's no action for me — no conflict,
+        # failing CI, or ready-to-ship), it is still awaiting review (not yet
+        # APPROVED, and the author isn't reworking a CHANGES_REQUESTED), yet it
+        # has sat untouched past the staleness threshold. Time to ping the
+        # reviewers. Unlike the reasons above, an unknown age never fires this
+        # (see _is_stale); disabled when now/stale_after aren't supplied.
+        if (
+            not reasons
+            and now is not None
+            and stale_after is not None
+            and pr.review_decision not in ("APPROVED", "CHANGES_REQUESTED")
+            and _is_stale(pr.updated_at, now, stale_after)
+        ):
+            reasons.add("stale")
 
     return reasons

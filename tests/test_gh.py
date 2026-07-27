@@ -2,11 +2,21 @@
 
 import json
 import subprocess
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from gh_prs import gh
-from gh_prs.gh import GhError, PullRequest, _attention_reasons, fetch_prs
+from gh_prs.gh import (
+    GhError,
+    PullRequest,
+    _attention_reasons,
+    _is_stale,
+    fetch_prs,
+)
+
+_NOW = datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC)
+_STALE_AFTER = timedelta(days=3)
 
 
 def _pr(**overrides) -> PullRequest:
@@ -270,6 +280,109 @@ class TestAuthorReasons:
             mergeable="CONFLICTING",
         )
         assert _attention_reasons(pr) == {"conflict"}
+
+
+class TestStaleReason:
+    """Authored PRs still awaiting review that have gone quiet too long."""
+
+    def _stale_pr(self, **overrides) -> PullRequest:
+        # Authored, review still pending, nothing actionable, last touched
+        # well before _NOW - _STALE_AFTER.
+        base = dict(
+            roles={"author"},
+            review_decision="REVIEW_REQUIRED",
+            updated_at="2026-07-01T12:00:00Z",
+        )
+        return _pr(**(base | overrides))
+
+    def _reasons(self, pr, now=_NOW, stale_after=_STALE_AFTER):
+        return _attention_reasons(pr, now=now, stale_after=stale_after)
+
+    def test_old_waiting_pr_is_stale(self):
+        assert self._reasons(self._stale_pr()) == {"stale"}
+
+    def test_no_review_decision_still_stale(self):
+        # A PR with no reviewers requested yet, but no approval, still counts
+        # as awaiting review.
+        assert self._reasons(self._stale_pr(review_decision="")) == {"stale"}
+
+    def test_recently_active_pr_is_not_stale(self):
+        pr = self._stale_pr(updated_at="2026-07-26T12:00:00Z")
+        assert self._reasons(pr) == set()
+
+    def test_exactly_at_threshold_is_stale(self):
+        # now - updated == stale_after: the boundary counts as stale (>=).
+        pr = self._stale_pr(updated_at="2026-07-24T12:00:00Z")
+        assert self._reasons(pr) == {"stale"}
+
+    def test_approved_pr_is_not_stale(self):
+        # Approved-but-not-mergeable (UNKNOWN) isn't awaiting review — it's
+        # waiting to merge, not a reviewer nudge.
+        pr = self._stale_pr(review_decision="APPROVED", mergeable="UNKNOWN")
+        assert self._reasons(pr) == set()
+
+    def test_changes_requested_pr_is_not_stale(self):
+        # The author is reworking it; pinging reviewers would be premature.
+        pr = self._stale_pr(review_decision="CHANGES_REQUESTED")
+        assert self._reasons(pr) == set()
+
+    def test_failing_ci_takes_precedence_over_stale(self):
+        pr = self._stale_pr(checks_state="FAILURE")
+        assert self._reasons(pr) == {"ci-failed"}
+
+    def test_conflict_takes_precedence_over_stale(self):
+        pr = self._stale_pr(mergeable="CONFLICTING")
+        assert self._reasons(pr) == {"conflict"}
+
+    def test_ready_takes_precedence_over_stale(self):
+        pr = self._stale_pr(
+            review_decision="APPROVED", checks_state="SUCCESS", mergeable="MERGEABLE"
+        )
+        assert self._reasons(pr) == {"ready"}
+
+    def test_reviewer_not_author_is_never_stale(self):
+        # 'stale' is only for PRs I authored; an old PR I'm asked to review
+        # surfaces as 'review', never 'stale'.
+        pr = self._stale_pr(roles={"review-requested"})
+        assert "stale" not in self._reasons(pr)
+
+    def test_draft_is_never_stale(self):
+        assert self._reasons(self._stale_pr(is_draft=True)) == set()
+
+    def test_disabled_when_no_threshold(self):
+        # Omitting now/stale_after (or stale_after=None) turns the nudge off.
+        assert _attention_reasons(self._stale_pr()) == set()
+        assert _attention_reasons(self._stale_pr(), now=_NOW, stale_after=None) == set()
+
+    def test_unparseable_updated_at_is_not_stale(self):
+        # Fail direction here is the opposite of the rest of the module: an
+        # unknown age must not fabricate a nudge on a possibly-fresh PR.
+        assert self._reasons(self._stale_pr(updated_at="")) == set()
+        assert self._reasons(self._stale_pr(updated_at="not-a-date")) == set()
+
+
+class TestIsStale:
+    def test_old_timestamp_is_stale(self):
+        assert _is_stale("2026-07-01T12:00:00Z", _NOW, _STALE_AFTER) is True
+
+    def test_recent_timestamp_is_not_stale(self):
+        assert _is_stale("2026-07-26T12:00:00Z", _NOW, _STALE_AFTER) is False
+
+    def test_boundary_is_stale(self):
+        assert _is_stale("2026-07-24T12:00:00Z", _NOW, _STALE_AFTER) is True
+
+    @pytest.mark.parametrize("bad", ["", "not-a-date", "2026-13-99"])
+    def test_unparseable_is_not_stale(self, bad):
+        assert _is_stale(bad, _NOW, _STALE_AFTER) is False
+
+    def test_non_string_is_not_stale(self):
+        # A non-str makes fromisoformat raise TypeError, not ValueError; the
+        # catch covers it so a shape-drifted None can't crash the nudge.
+        assert _is_stale(None, _NOW, _STALE_AFTER) is False
+
+    def test_naive_timestamp_is_not_stale(self):
+        # A timestamp without a timezone can't be compared safely → no nudge.
+        assert _is_stale("2026-07-01T12:00:00", _NOW, _STALE_AFTER) is False
 
 
 class TestFromGraphql:
