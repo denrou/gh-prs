@@ -431,7 +431,7 @@ class TestSnoozeFiltering:
 class TestSnoozeActions:
     @pytest.fixture(autouse=True)
     def stub_attention_fetch(self, monkeypatch):
-        """--snooze fetches the attention view to capture reasons; stub it so
+        """Snoozing fetches the attention view to capture reasons; stub it so
         these tests neither hit the network nor need a live gh. Individual
         tests override cli.fetch_prs to exercise reason capture.
         """
@@ -443,21 +443,21 @@ class TestSnoozeActions:
 
     def test_snooze_normalizes_url_and_records_head_oid(self, monkeypatch, capsys):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
-        assert cli.main(["--snooze", f"{_SNOOZE_URL}/files?diff=split"]) == 0
+        assert cli.main(["snooze", f"{_SNOOZE_URL}/files?diff=split"]) == 0
         entry = load_snoozes()[_SNOOZE_URL]
         assert entry["oid"] == "cafe123"
         assert "Snoozed" in capsys.readouterr().out
 
     def test_snooze_defaults_to_24h_window(self, monkeypatch):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
-        assert cli.main(["--snooze", _SNOOZE_URL]) == 0
+        assert cli.main(["snooze", _SNOOZE_URL]) == 0
         until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
         remaining = until - datetime.now(UTC)
         assert timedelta(hours=23) < remaining <= timedelta(hours=24)
 
     def test_snooze_for_custom_duration(self, monkeypatch):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
-        assert cli.main(["--snooze", _SNOOZE_URL, "--for", "3d"]) == 0
+        assert cli.main(["snooze", _SNOOZE_URL, "--for", "3d"]) == 0
         until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
         remaining = until - datetime.now(UTC)
         assert timedelta(days=2, hours=23) < remaining <= timedelta(days=3)
@@ -467,7 +467,7 @@ class TestSnoozeActions:
             raise AssertionError("fetch_pr_head must not run")
 
         monkeypatch.setattr(cli, "fetch_pr_head", boom)
-        assert cli.main(["--snooze", _SNOOZE_URL, "--for", "soon"]) == 1
+        assert cli.main(["snooze", _SNOOZE_URL, "--for", "soon"]) == 1
         assert "invalid duration" in capsys.readouterr().err
         assert load_snoozes() == {}
 
@@ -478,7 +478,7 @@ class TestSnoozeActions:
             raise AssertionError("a rejected shorthand must not be looked up")
 
         monkeypatch.setattr(cli, "fetch_pr_head", no_fetch)
-        assert cli.main(["--snooze", shorthand]) == 1
+        assert cli.main(["snooze", shorthand]) == 1
         assert load_snoozes() == {}
         assert "not a pull request URL" in capsys.readouterr().err
 
@@ -487,23 +487,23 @@ class TestSnoozeActions:
             raise GhError("no such PR")
 
         monkeypatch.setattr(cli, "fetch_pr_head", boom)
-        assert cli.main(["--snooze", _SNOOZE_URL]) == 1
+        assert cli.main(["snooze", _SNOOZE_URL]) == 1
         assert load_snoozes() == {}
         assert "no such PR" in capsys.readouterr().err
 
     def test_snooze_rejects_non_pr_url(self, capsys):
-        assert cli.main(["--snooze", "https://github.com/acme/widgets"]) == 1
+        assert cli.main(["snooze", "https://github.com/acme/widgets"]) == 1
         assert "not a pull request URL" in capsys.readouterr().err
 
-    @pytest.mark.parametrize("flag", ["--snooze", "--unsnooze"])
-    def test_empty_url_is_a_clean_error_not_a_fetch(self, monkeypatch, flag, capsys):
-        # An empty (falsy) URL must still dispatch to the action and fail URL
-        # validation — not fall through to the fetch-and-render path.
+    @pytest.mark.parametrize("command", ["snooze", "unsnooze"])
+    def test_empty_url_is_a_clean_error_not_a_fetch(self, monkeypatch, command, capsys):
+        # An empty (falsy) URL must still reach URL validation and fail it —
+        # for snooze in particular, not be mistaken for the bare listing form.
         def boom(qualifiers=None, on_warning=None):
             raise AssertionError("fetch_prs must not run")
 
         monkeypatch.setattr(cli, "fetch_prs", boom)
-        assert cli.main([flag, ""]) == 1
+        assert cli.main([command, ""]) == 1
         assert "not a pull request URL" in capsys.readouterr().err
 
     def test_snooze_bare_number_resolves_via_gh(self, monkeypatch):
@@ -518,7 +518,7 @@ class TestSnoozeActions:
 
         monkeypatch.setattr(cli, "resolve_pr", fake_resolve)
         monkeypatch.setattr(cli, "fetch_pr_head", no_fetch)
-        assert cli.main(["--snooze", "1"]) == 0
+        assert cli.main(["snooze", "1"]) == 0
         # No --repo given → resolved against the current directory.
         assert calls == [("1", None)]
         assert load_snoozes()[_SNOOZE_URL]["oid"] == "cafe123"
@@ -531,21 +531,19 @@ class TestSnoozeActions:
             return _SNOOZE_URL, "cafe123"
 
         monkeypatch.setattr(cli, "resolve_pr", fake_resolve)
-        assert cli.main(["--snooze", "7", "-R", "acme/widgets"]) == 0
+        assert cli.main(["snooze", "7", "-R", "acme/widgets"]) == 0
         assert calls == [("7", "acme/widgets")]
 
     def test_snooze_multiple_refs(self, monkeypatch):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe")
         other = "https://github.com/acme/widgets/pull/2"
-        assert cli.main(["--snooze", _SNOOZE_URL, other]) == 0
+        assert cli.main(["snooze", _SNOOZE_URL, other]) == 0
         assert set(load_snoozes()) == {_SNOOZE_URL, other}
 
     def test_snooze_partial_failure_records_good_refs(self, monkeypatch, capsys):
         # A bad ref is reported and skipped; the good one is still snoozed.
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe")
-        assert (
-            cli.main(["--snooze", _SNOOZE_URL, "https://github.com/acme/widgets"]) == 1
-        )
+        assert cli.main(["snooze", _SNOOZE_URL, "https://github.com/acme/widgets"]) == 1
         assert set(load_snoozes()) == {_SNOOZE_URL}
         assert "not a pull request URL" in capsys.readouterr().err
 
@@ -563,30 +561,30 @@ class TestSnoozeActions:
                 )
             ],
         )
-        assert cli.main(["--snooze", _SNOOZE_URL]) == 0
+        assert cli.main(["snooze", _SNOOZE_URL]) == 0
         assert load_snoozes()[_SNOOZE_URL]["reasons"] == ["review"]
 
     def test_snooze_absent_pr_records_no_reasons(self, monkeypatch):
         # The autouse stub returns no PRs, so there are no reasons to attach;
         # the entry falls back to the head-and-window rule alone.
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
-        assert cli.main(["--snooze", _SNOOZE_URL]) == 0
+        assert cli.main(["snooze", _SNOOZE_URL]) == 0
         assert "reasons" not in load_snoozes()[_SNOOZE_URL]
 
     def test_unsnooze_removes_entry(self, capsys):
         save_snoozes({_SNOOZE_URL: _entry("cafe")})
-        assert cli.main(["--unsnooze", _SNOOZE_URL]) == 0
+        assert cli.main(["unsnooze", _SNOOZE_URL]) == 0
         assert load_snoozes() == {}
         assert "Unsnoozed" in capsys.readouterr().out
 
     def test_unsnooze_missing_entry_errors(self, capsys):
-        assert cli.main(["--unsnooze", _SNOOZE_URL]) == 1
+        assert cli.main(["unsnooze", _SNOOZE_URL]) == 1
         assert "is not snoozed" in capsys.readouterr().err
 
     def test_unsnooze_bare_number_resolves_via_gh(self, monkeypatch):
         save_snoozes({_SNOOZE_URL: _entry("cafe")})
         monkeypatch.setattr(cli, "resolve_pr", lambda ref, repo: (_SNOOZE_URL, "cafe"))
-        assert cli.main(["--unsnooze", "1"]) == 0
+        assert cli.main(["unsnooze", "1"]) == 0
         assert load_snoozes() == {}
 
     def test_unsnooze_url_needs_no_gh_lookup(self, monkeypatch):
@@ -596,32 +594,60 @@ class TestSnoozeActions:
 
         save_snoozes({_SNOOZE_URL: _entry("cafe")})
         monkeypatch.setattr(cli, "resolve_pr", boom)
-        assert cli.main(["--unsnooze", _SNOOZE_URL]) == 0
+        assert cli.main(["unsnooze", _SNOOZE_URL]) == 0
         assert load_snoozes() == {}
 
     def test_unsnooze_multiple_refs(self, capsys):
         other = "https://github.com/acme/widgets/pull/2"
         save_snoozes({_SNOOZE_URL: _entry("cafe"), other: _entry("beef")})
-        assert cli.main(["--unsnooze", _SNOOZE_URL, other]) == 0
+        assert cli.main(["unsnooze", _SNOOZE_URL, other]) == 0
         assert load_snoozes() == {}
 
-    def test_snoozed_lists_entries(self, capsys):
+    def test_bare_snooze_lists_entries(self, capsys):
         save_snoozes({_SNOOZE_URL: _entry("cafe123deadbeef")})
-        assert cli.main(["--snoozed", "--no-color"]) == 0
+        assert cli.main(["snooze", "--no-color"]) == 0
         out = capsys.readouterr().out
         assert _SNOOZE_URL in out
         assert "until" in out
         assert "cafe123deadbe" not in out  # oid shown truncated to 12 chars
         assert "cafe123deadb" in out
 
-    def test_snoozed_marks_expired_entries(self, capsys):
+    def test_bare_snooze_marks_expired_entries(self, capsys):
         save_snoozes({_SNOOZE_URL: _entry("cafe", hours=-1)})
-        assert cli.main(["--snoozed", "--no-color"]) == 0
+        assert cli.main(["snooze", "--no-color"]) == 0
         assert "expired" in capsys.readouterr().out
 
-    def test_snoozed_empty_store_says_so(self, capsys):
-        assert cli.main(["--snoozed", "--no-color"]) == 0
+    def test_bare_snooze_empty_store_says_so(self, capsys):
+        assert cli.main(["snooze", "--no-color"]) == 0
         assert "No snoozed PRs" in capsys.readouterr().out
+
+    def test_bare_snooze_rejects_dangling_for(self, capsys):
+        # "--for without refs" means a forgotten PR ref, not a listing request.
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["snooze", "--for", "3d"]) == 2
+        captured = capsys.readouterr()
+        assert "--for requires at least one PR" in captured.err
+        assert _SNOOZE_URL not in captured.out
+
+    @pytest.mark.parametrize(
+        "flag", ["--snooze", "--snooze=1", "--unsnooze", "--snoozed"]
+    )
+    def test_removed_flags_hint_at_subcommands(self, monkeypatch, flag, capsys):
+        def boom(qualifiers=None, on_warning=None):
+            raise AssertionError("fetch_prs must not run")
+
+        monkeypatch.setattr(cli, "fetch_prs", boom)
+        assert cli.main([flag, "1"]) == 2
+        assert "replaced by a subcommand" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "flags",
+        [["-c"], ["-r"], ["-a"], ["--count"], ["--json"], ["--stale-after", "5d"]],
+    )
+    def test_view_flags_rejected_with_subcommand(self, flags, capsys):
+        assert cli.main([*flags, "snooze", _SNOOZE_URL]) == 2
+        assert "do not apply" in capsys.readouterr().err
+        assert load_snoozes() == {}
 
     def test_corrupt_store_is_fatal_for_write_actions(self, monkeypatch, capsys):
         # Writing through a corrupt store would clobber it.
@@ -629,6 +655,6 @@ class TestSnoozeActions:
         path = snooze_path()
         path.parent.mkdir(parents=True)
         path.write_text("{not json")
-        assert cli.main(["--snooze", _SNOOZE_URL]) == 1
+        assert cli.main(["snooze", _SNOOZE_URL]) == 1
         assert "Error:" in capsys.readouterr().err
         assert path.read_text() == "{not json"

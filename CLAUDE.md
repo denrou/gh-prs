@@ -133,7 +133,7 @@ is a hard error (explicit user input); a bad config file only warns.
 
 ### Snoozing (`snooze.py`, applied in `cli.py`)
 
-`--snooze <pr>...` records each PR's head oid, an expiry timestamp
+`gh prs snooze <pr>...` records each PR's head oid, an expiry timestamp
 (default 24h, `--for 12h/3d/1w`), and the PR's `attention_reasons` at snooze
 time (a sorted list; captured by fetching the attention view once, and
 omitted when the PR isn't in it or the fetch fails); the default attention
@@ -144,8 +144,9 @@ review resurface once it's reviewed and becomes yours to merge, even though
 its head never moved. The same fail-safe direction as everywhere else
 applies: an unknown oid, an uncomparable timestamp, a moved head, a changed
 reason set, an elapsed window, or an unreadable store all _show_ the PR (a
-corrupt store only warns on the view path, but is fatal for
-`--snooze`/`--unsnooze`, which must not clobber the file). Entries written
+corrupt store only warns on the view path, but is fatal for the
+`snooze`/`unsnooze` subcommands, which must not clobber the file — including
+the bare listing, which must not render a half-parsed store). Entries written
 before reason-tracking (no `reasons` key) keep working on head-and-window
 alone. Dead entries are pruned — with an on-stderr "snooze expired" warning
 when the PR actually resurfaced — and the view reports how many
@@ -155,19 +156,27 @@ Entries whose PR no longer appears in any search are kept while their window
 is open (the PR may be closed _or_ merely beyond the 100-node cap; deleting
 on absence would lose live snoozes) and pruned quietly once it elapses.
 
-`--snooze`/`--unsnooze` each take one or more PR references, following `gh`'s
-own conventions: a bare number (`123`) or a full URL. A bare number is scoped
-by `-R/--repo owner/repo`, or — when that's omitted — the repository of the
-current directory. Bare numbers are resolved through `gh.resolve_pr()` (a
-`gh pr view` call), so their canonical URL and host come straight from `gh`
-and enterprise instances work without host-specific URL construction; a full
-URL is canonicalized offline by `normalize_pr_url()` (keeping `snooze.py`
-free of `gh` calls), so `--unsnooze <url>` needs no network. The old
-`owner/repo/123` / `owner/repo#123` shorthand was removed in favor of a
-number plus `--repo`; both forms now hard-error. References resolve
-independently: a bad or not-snoozed one is reported to stderr and skipped
-while the rest are applied, the store is written once, and a partial batch
-exits non-zero — never clobbering the file.
+Snoozing is exposed as subcommands, matching `gh`'s verb style
+(`gh pr close`): `gh prs snooze <pr>...` and `gh prs unsnooze <pr>...`, with
+the bare `gh prs snooze` listing the store (like `git branch`; `--for`
+without refs is rejected — it means a forgotten ref, not a listing request).
+The pre-subcommand flags (`--snooze`/`--unsnooze`/`--snoozed`) hard-error
+with a migration hint, and combining a subcommand with the view flags
+(`-c`/`-r`/`-a`, `--count`, `--json`, `--stale-after`) is rejected rather
+than silently ignored. Each subcommand takes one or more PR references,
+following `gh`'s own conventions: a bare number (`123`) or a full URL. A
+bare number is scoped by `-R/--repo owner/repo`, or — when that's omitted —
+the repository of the current directory. Bare numbers are resolved through
+`gh.resolve_pr()` (a `gh pr view` call), so their canonical URL and host
+come straight from `gh` and enterprise instances work without host-specific
+URL construction; a full URL is canonicalized offline by
+`normalize_pr_url()` (keeping `snooze.py` free of `gh` calls), so
+`gh prs unsnooze <url>` needs no network. The old `owner/repo/123` /
+`owner/repo#123` shorthand was removed in favor of a number plus `--repo`;
+both forms now hard-error. References resolve independently: a bad or
+not-snoozed one is reported to stderr and skipped while the rest are
+applied, the store is written once, and a partial batch exits non-zero —
+never clobbering the file.
 
 ## Notes
 
