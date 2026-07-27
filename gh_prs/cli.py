@@ -1,6 +1,7 @@
 """Command-line interface for listing GitHub pull requests that need action."""
 
 import argparse
+import re
 import sys
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -17,6 +18,7 @@ from gh_prs.gh import (
     count_prs,
     fetch_pr_head,
     fetch_prs,
+    resolve_pr,
 )
 from gh_prs.snooze import (
     SnoozeError,
@@ -41,6 +43,11 @@ _SECTIONS = [
 
 # Sections listing other people's PRs show the author column.
 _SECTIONS_WITH_AUTHOR = {"review", "new-commits"}
+
+# A snooze reference that is a bare PR number: resolved through gh (against
+# --repo or the current directory), unlike a full URL which normalize_pr_url
+# canonicalizes offline.
+_BARE_NUMBER = re.compile(r"^\d+$")
 
 # Per-view configuration: search qualifiers, flat-list title, and its style.
 # The "attention" view renders grouped sections instead of a flat list.
@@ -187,6 +194,104 @@ def _local(timestamp: str) -> str:
     return datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
+def _ref_to_url(ref: str, repo: str | None) -> str:
+    """Canonical PR url for one reference, without fetching its head.
+
+    A bare PR number is resolved through gh (against ``repo``, or the current
+    directory) so it learns its host and url; a full URL is canonicalized
+    offline, so unsnoozing one needs no network.
+    """
+    ref = ref.strip()
+    if _BARE_NUMBER.match(ref):
+        url, _ = resolve_pr(ref, repo)
+        return url
+    return normalize_pr_url(ref)
+
+
+def _ref_to_url_and_head(ref: str, repo: str | None) -> tuple[str, str]:
+    """Canonical PR url plus head oid for one reference (for snoozing).
+
+    A bare number resolves both in a single gh call; a URL is canonicalized
+    offline and its head then fetched by url.
+    """
+    ref = ref.strip()
+    if _BARE_NUMBER.match(ref):
+        return resolve_pr(ref, repo)
+    url = normalize_pr_url(ref)
+    return url, fetch_pr_head(url)
+
+
+def _do_snooze(
+    args: argparse.Namespace,
+    snoozes: dict[str, dict[str, str]],
+    now: datetime,
+    console: Console,
+    err: Console,
+) -> int:
+    """Snooze every PR in ``args.snooze``; return the exit code.
+
+    Refs are resolved independently: a bad one is reported and skipped while
+    the rest are snoozed (partial success exits non-zero). The store is
+    written once, only if at least one ref resolved.
+    """
+    # Validate the duration up front so a typo fails before any network round-trip.
+    duration = parse_duration(args.snooze_for)
+    resolved: dict[str, str] = {}  # canonical url -> head oid
+    failures: list[str] = []
+    for ref in args.snooze:
+        try:
+            with err.status(f"Looking up {escape(ref)}…", spinner="dots"):
+                url, oid = _ref_to_url_and_head(ref, args.repo)
+        except (SnoozeError, GhError) as exc:
+            failures.append(f"{ref}: {exc}")
+            continue
+        resolved[url] = oid
+    for url, oid in resolved.items():
+        snoozes[url] = make_entry(oid, now, duration)
+    if resolved:
+        save_snoozes(snoozes)
+        for url in resolved:
+            console.print(
+                f"Snoozed {escape(url)} [dim](until "
+                f"{_local(snoozes[url]['until'])}, or sooner if its head moves)[/dim]"
+            )
+    for failure in failures:
+        err.print(f"[red]Error:[/red] {escape(failure)}")
+    return 1 if failures else 0
+
+
+def _do_unsnooze(
+    args: argparse.Namespace,
+    snoozes: dict[str, dict[str, str]],
+    console: Console,
+    err: Console,
+) -> int:
+    """Remove the snooze on every PR in ``args.unsnooze``; return the exit code.
+
+    As with snoozing, refs are handled independently (a bad or not-snoozed one
+    is reported and skipped) and the store is written once if anything changed.
+    """
+    removed: list[str] = []
+    failures: list[str] = []
+    for ref in args.unsnooze:
+        try:
+            url = _ref_to_url(ref, args.repo)
+        except (SnoozeError, GhError) as exc:
+            failures.append(f"{ref}: {exc}")
+            continue
+        if snoozes.pop(url, None) is None:
+            failures.append(f"{ref} ({url}) is not snoozed")
+        else:
+            removed.append(url)
+    if removed:
+        save_snoozes(snoozes)
+        for url in removed:
+            console.print(f"Unsnoozed {escape(url)}")
+    for failure in failures:
+        err.print(f"[red]Error:[/red] {escape(failure)}")
+    return 1 if failures else 0
+
+
 def _run_snooze_action(args: argparse.Namespace, console: Console, err: Console) -> int:
     """Handle --snooze / --unsnooze / --snoozed; returns the exit code.
 
@@ -210,25 +315,8 @@ def _run_snooze_action(args: argparse.Namespace, console: Console, err: Console)
                 console.print(f"{escape(url)} [dim]({detail})[/dim]")
             return 0
         if args.snooze is not None:
-            url = normalize_pr_url(args.snooze)
-            # Validate the duration before spending a network round-trip.
-            duration = parse_duration(args.snooze_for)
-            with err.status("Looking up PR…", spinner="dots"):
-                oid = fetch_pr_head(url)
-            snoozes[url] = make_entry(oid, now, duration)
-            save_snoozes(snoozes)
-            console.print(
-                f"Snoozed {escape(url)} [dim](until "
-                f"{_local(snoozes[url]['until'])}, or sooner if its head moves)[/dim]"
-            )
-            return 0
-        url = normalize_pr_url(args.unsnooze)
-        if snoozes.pop(url, None) is None:
-            err.print(f"[red]Error:[/red] {escape(url)} is not snoozed")
-            return 1
-        save_snoozes(snoozes)
-        console.print(f"Unsnoozed {escape(url)}")
-        return 0
+            return _do_snooze(args, snoozes, now, console, err)
+        return _do_unsnooze(args, snoozes, console, err)
     except (SnoozeError, GhError) as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
@@ -279,24 +367,33 @@ def main(argv: list[str] | None = None) -> int:
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument(
         "--snooze",
+        nargs="+",
         metavar="PR",
-        help="hide a PR (URL or owner/repo/number) from the attention view "
-        "for --for's duration, or until it gets new commits",
+        help="hide one or more PRs (a number, or a full URL) from the "
+        "attention view for --for's duration, or until they get new commits",
     )
     actions.add_argument(
         "--unsnooze",
+        nargs="+",
         metavar="PR",
-        help="remove a PR's snooze (URL or owner/repo/number)",
+        help="remove the snooze on one or more PRs (a number, or a full URL)",
     )
     actions.add_argument(
         "--snoozed", action="store_true", help="list snoozed PRs and exit"
+    )
+    parser.add_argument(
+        "-R",
+        "--repo",
+        metavar="OWNER/REPO",
+        help="repository for bare PR numbers given to --snooze/--unsnooze "
+        "(default: the repository in the current directory)",
     )
     parser.add_argument(
         "--for",
         dest="snooze_for",
         default="24h",
         metavar="DURATION",
-        help="with --snooze: how long to hide the PR (e.g. 12h, 3d, 1w; default 24h)",
+        help="with --snooze: how long to hide the PRs (e.g. 12h, 3d, 1w; default 24h)",
     )
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"

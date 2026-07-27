@@ -103,8 +103,7 @@ A non-draft PR needs attention when any of these hold:
 
 ### Snoozing (`snooze.py`, applied in `cli.py`)
 
-`--snooze <pr>` (full URL or github.com shorthand `owner/repo/123` /
-`owner/repo#123`) records the PR's head oid plus an expiry timestamp
+`--snooze <pr>...` records each PR's head oid plus an expiry timestamp
 (default 24h, `--for 12h/3d/1w`); the default attention view (table and
 `--count`) then hides the PR while _both_ hold: head unchanged and window
 open. The same fail-safe direction as everywhere else applies: an unknown
@@ -118,6 +117,20 @@ counts, and `--json` never consult the store — their output stays exact.
 Entries whose PR no longer appears in any search are kept while their window
 is open (the PR may be closed _or_ merely beyond the 100-node cap; deleting
 on absence would lose live snoozes) and pruned quietly once it elapses.
+
+`--snooze`/`--unsnooze` each take one or more PR references, following `gh`'s
+own conventions: a bare number (`123`) or a full URL. A bare number is scoped
+by `-R/--repo owner/repo`, or — when that's omitted — the repository of the
+current directory. Bare numbers are resolved through `gh.resolve_pr()` (a
+`gh pr view` call), so their canonical URL and host come straight from `gh`
+and enterprise instances work without host-specific URL construction; a full
+URL is canonicalized offline by `normalize_pr_url()` (keeping `snooze.py`
+free of `gh` calls), so `--unsnooze <url>` needs no network. The old
+`owner/repo/123` / `owner/repo#123` shorthand was removed in favor of a
+number plus `--repo`; both forms now hard-error. References resolve
+independently: a bad or not-snoozed one is reported to stderr and skipped
+while the rest are applied, the store is written once, and a partial batch
+exits non-zero — never clobbering the file.
 
 ## Notes
 

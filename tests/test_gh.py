@@ -529,6 +529,75 @@ class TestFetchPrHead:
             gh.fetch_pr_head("url")
 
 
+class TestResolvePr:
+    """resolve_pr: bare-number resolution and response validation (mocked _run_gh)."""
+
+    def test_bare_number_uses_current_repo(self, monkeypatch):
+        calls: list[tuple] = []
+
+        def fake_run(*args):
+            calls.append(args)
+            return _completed(
+                '{"url": "https://github.com/acme/widgets/pull/42",'
+                ' "headRefOid": "cafe123"}'
+            )
+
+        monkeypatch.setattr(gh, "_run_gh", fake_run)
+        url, oid = gh.resolve_pr("42")
+        assert url == "https://github.com/acme/widgets/pull/42"
+        assert oid == "cafe123"
+        # No --repo when none is given: gh resolves against the current dir.
+        assert calls == [("pr", "view", "42", "--json", "url,headRefOid")]
+
+    def test_repo_is_passed_through(self, monkeypatch):
+        calls: list[tuple] = []
+
+        def fake_run(*args):
+            calls.append(args)
+            return _completed('{"url": "u", "headRefOid": "cafe"}')
+
+        monkeypatch.setattr(gh, "_run_gh", fake_run)
+        gh.resolve_pr("42", "acme/widgets")
+        assert calls == [
+            ("pr", "view", "42", "--json", "url,headRefOid", "--repo", "acme/widgets")
+        ]
+
+    def test_nonzero_exit_names_the_repo(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed("", returncode=1, stderr="not found")
+        )
+        with pytest.raises(GhError, match=r"PR 42 in acme/widgets.*not found"):
+            gh.resolve_pr("42", "acme/widgets")
+
+    def test_invalid_json_raises(self, monkeypatch):
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed("not json"))
+        with pytest.raises(GhError, match="invalid JSON"):
+            gh.resolve_pr("42")
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["{}", '{"url": "", "headRefOid": "cafe"}', '{"url": 5, "headRefOid": "cafe"}'],
+    )
+    def test_missing_url_raises(self, monkeypatch, payload):
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="no url"):
+            gh.resolve_pr("42")
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            '{"url": "u"}',
+            '{"url": "u", "headRefOid": ""}',
+            '{"url": "u", "headRefOid": 5}',
+        ],
+    )
+    def test_missing_oid_raises(self, monkeypatch, payload):
+        # A snooze recorded against an unknown head could hide newer work.
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="no headRefOid"):
+            gh.resolve_pr("42")
+
+
 class TestFetchPrs:
     """fetch_prs orchestration (mocked _search)."""
 

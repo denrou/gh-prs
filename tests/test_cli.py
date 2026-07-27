@@ -326,11 +326,16 @@ class TestSnoozeActions:
         assert "invalid duration" in capsys.readouterr().err
         assert load_snoozes() == {}
 
-    def test_snooze_accepts_shorthand(self, monkeypatch, capsys):
-        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
-        assert cli.main(["--snooze", "acme/widgets/1"]) == 0
-        assert _SNOOZE_URL in load_snoozes()
-        assert _SNOOZE_URL in capsys.readouterr().out
+    @pytest.mark.parametrize("shorthand", ["acme/widgets/1", "acme/widgets#1"])
+    def test_snooze_rejects_removed_shorthand(self, monkeypatch, shorthand, capsys):
+        # owner/repo/123 and owner/repo#123 are gone: use a number + --repo.
+        def no_fetch(url):
+            raise AssertionError("a rejected shorthand must not be looked up")
+
+        monkeypatch.setattr(cli, "fetch_pr_head", no_fetch)
+        assert cli.main(["--snooze", shorthand]) == 1
+        assert load_snoozes() == {}
+        assert "not a pull request URL" in capsys.readouterr().err
 
     def test_snooze_lookup_failure_stores_nothing(self, monkeypatch, capsys):
         def boom(url):
@@ -356,6 +361,49 @@ class TestSnoozeActions:
         assert cli.main([flag, ""]) == 1
         assert "not a pull request URL" in capsys.readouterr().err
 
+    def test_snooze_bare_number_resolves_via_gh(self, monkeypatch):
+        calls: list[tuple] = []
+
+        def fake_resolve(ref, repo):
+            calls.append((ref, repo))
+            return _SNOOZE_URL, "cafe123"
+
+        def no_fetch(url):
+            raise AssertionError("a bare number must not use fetch_pr_head")
+
+        monkeypatch.setattr(cli, "resolve_pr", fake_resolve)
+        monkeypatch.setattr(cli, "fetch_pr_head", no_fetch)
+        assert cli.main(["--snooze", "1"]) == 0
+        # No --repo given → resolved against the current directory.
+        assert calls == [("1", None)]
+        assert load_snoozes()[_SNOOZE_URL]["oid"] == "cafe123"
+
+    def test_snooze_bare_number_honors_repo_flag(self, monkeypatch):
+        calls: list[tuple] = []
+
+        def fake_resolve(ref, repo):
+            calls.append((ref, repo))
+            return _SNOOZE_URL, "cafe123"
+
+        monkeypatch.setattr(cli, "resolve_pr", fake_resolve)
+        assert cli.main(["--snooze", "7", "-R", "acme/widgets"]) == 0
+        assert calls == [("7", "acme/widgets")]
+
+    def test_snooze_multiple_refs(self, monkeypatch):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe")
+        other = "https://github.com/acme/widgets/pull/2"
+        assert cli.main(["--snooze", _SNOOZE_URL, other]) == 0
+        assert set(load_snoozes()) == {_SNOOZE_URL, other}
+
+    def test_snooze_partial_failure_records_good_refs(self, monkeypatch, capsys):
+        # A bad ref is reported and skipped; the good one is still snoozed.
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe")
+        assert (
+            cli.main(["--snooze", _SNOOZE_URL, "https://github.com/acme/widgets"]) == 1
+        )
+        assert set(load_snoozes()) == {_SNOOZE_URL}
+        assert "not a pull request URL" in capsys.readouterr().err
+
     def test_unsnooze_removes_entry(self, capsys):
         save_snoozes({_SNOOZE_URL: _entry("cafe")})
         assert cli.main(["--unsnooze", _SNOOZE_URL]) == 0
@@ -365,6 +413,28 @@ class TestSnoozeActions:
     def test_unsnooze_missing_entry_errors(self, capsys):
         assert cli.main(["--unsnooze", _SNOOZE_URL]) == 1
         assert "is not snoozed" in capsys.readouterr().err
+
+    def test_unsnooze_bare_number_resolves_via_gh(self, monkeypatch):
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        monkeypatch.setattr(cli, "resolve_pr", lambda ref, repo: (_SNOOZE_URL, "cafe"))
+        assert cli.main(["--unsnooze", "1"]) == 0
+        assert load_snoozes() == {}
+
+    def test_unsnooze_url_needs_no_gh_lookup(self, monkeypatch):
+        # A full URL is canonicalized offline, so removal works without network.
+        def boom(ref, repo=None):
+            raise AssertionError("unsnoozing a URL must not call gh")
+
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        monkeypatch.setattr(cli, "resolve_pr", boom)
+        assert cli.main(["--unsnooze", _SNOOZE_URL]) == 0
+        assert load_snoozes() == {}
+
+    def test_unsnooze_multiple_refs(self, capsys):
+        other = "https://github.com/acme/widgets/pull/2"
+        save_snoozes({_SNOOZE_URL: _entry("cafe"), other: _entry("beef")})
+        assert cli.main(["--unsnooze", _SNOOZE_URL, other]) == 0
+        assert load_snoozes() == {}
 
     def test_snoozed_lists_entries(self, capsys):
         save_snoozes({_SNOOZE_URL: _entry("cafe123deadbeef")})
