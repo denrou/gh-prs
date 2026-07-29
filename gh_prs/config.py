@@ -8,9 +8,10 @@ two want opposite fail-safe handling, so they live in separate files.
 The store is a JSON object at ``$XDG_CONFIG_HOME/gh-prs/config.json``
 (``~/.config/gh-prs/config.json`` by default). A missing file means "all
 defaults". Today the only setting is ``stale_after`` — the silence threshold
-for the 'stale' nudge on authored PRs still awaiting review:
+for the 'stale' nudge on authored PRs still awaiting review and the
+'stale-draft' nudge on authored drafts:
 
-    {"stale_after": "3d"}    # a duration; null disables the nudge entirely
+    {"stale_after": "3d"}    # a duration; null disables both nudges entirely
 
 Only the view path reads this file, and it degrades to defaults (with a
 warning) on any error — the tool never writes it, so there is nothing to
@@ -33,7 +34,8 @@ class ConfigError(Exception):
 
 @dataclass(slots=True)
 class Config:
-    # Silence threshold for the 'stale' nudge; None disables it entirely.
+    # Silence threshold for the 'stale' and 'stale-draft' nudges; None
+    # disables both entirely.
     stale_after: timedelta | None = DEFAULT_STALE_AFTER
 
 
@@ -77,7 +79,7 @@ def _parse_stale_after(data: dict, path: Path) -> timedelta | None:
     if not isinstance(value, str):
         raise ConfigError(
             f"{path}: 'stale_after' must be a duration string like \"3d\" "
-            "(or null to disable the stale nudge)"
+            "(or null to disable the staleness nudges)"
         )
     try:
         return parse_duration(value)

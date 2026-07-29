@@ -243,7 +243,15 @@ class TestAttentionRendering:
     def test_every_attention_reason_has_a_section(self):
         # A reason without a section would count toward --count yet never
         # render — the PR would be invisible while "needing attention".
-        emittable = {"review", "new-commits", "ready", "ci-failed", "conflict", "stale"}
+        emittable = {
+            "review",
+            "new-commits",
+            "ready",
+            "ci-failed",
+            "conflict",
+            "stale",
+            "stale-draft",
+        }
         assert emittable == {reason for reason, _, _ in cli._SECTIONS}
 
     def test_new_commits_section_renders_with_author(self):
@@ -263,6 +271,18 @@ class TestAttentionRendering:
             cli._render_attention(console, [pr])
         out = capture.get()
         assert "Waiting on review — time to nudge" in out
+        assert "octocat" not in out
+
+    def test_stale_draft_section_renders_without_author(self):
+        # 'stale-draft' PRs are my own drafts: no author column, and this is
+        # the one attention section where the (draft) title prefix shows.
+        pr = _pr(1, attention_reasons={"stale-draft"}, author="octocat", is_draft=True)
+        console = Console(no_color=True, force_terminal=False, width=200)
+        with console.capture() as capture:
+            cli._render_attention(console, [pr])
+        out = capture.get()
+        assert "Drafts gone quiet — finish or mark ready" in out
+        assert "(draft)" in out
         assert "octocat" not in out
 
 

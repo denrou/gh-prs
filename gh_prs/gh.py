@@ -14,8 +14,9 @@ class GhError(RuntimeError):
     """A gh CLI invocation failed (missing binary, auth, network, bad output)."""
 
 
-# Default silence before an authored PR still awaiting review is flagged
-# 'stale' (a nudge to ping the reviewers). Overridable via config / CLI.
+# Default silence before an authored PR is flagged 'stale' (still awaiting
+# review — a nudge to ping the reviewers) or 'stale-draft' (still a draft — a
+# nudge to finish it or mark it ready). Overridable via config / CLI.
 DEFAULT_STALE_AFTER = timedelta(days=3)
 
 
@@ -389,7 +390,8 @@ def fetch_prs(
     is computed before returning.
 
     ``stale_after`` is the silence threshold for the 'stale' nudge on
-    authored PRs still awaiting review; ``None`` disables that reason.
+    authored PRs still awaiting review and the 'stale-draft' nudge on
+    authored drafts; ``None`` disables both reasons.
 
     ``on_warning`` (if given) receives a message when a search matched more
     PRs than the cap, and when a PR matched by ``reviewed-by`` carries no
@@ -462,7 +464,8 @@ def fetch_prs(
         # The reviewed-by search positively asserts I reviewed this PR; an
         # empty my_review_state therefore means the latestReviews 50-node cap
         # hid my review — a contradiction that would otherwise silently
-        # disable new-commit detection for this PR. Drafts never flag anyway.
+        # disable new-commit detection for this PR. Drafts never flag
+        # new-commits anyway.
         if (
             on_warning is not None
             and not pr.is_draft
@@ -502,12 +505,32 @@ def _attention_reasons(
 ) -> set[str]:
     """Compute why an enriched PR needs the current user's attention.
 
-    Pure function of the PR's enriched fields plus the clock. Drafts never
-    need attention. The 'stale' nudge only fires when both ``now`` and
-    ``stale_after`` are supplied; omitting either disables it (so a bare
-    ``_attention_reasons(pr)`` never returns 'stale').
+    Pure function of the PR's enriched fields plus the clock. Drafts are
+    deliberately parked WIP, so only two reasons can fire on them, both for
+    the author: 'conflict' and the 'stale-draft' nudge. The 'stale' and
+    'stale-draft' nudges only fire when both ``now`` and ``stale_after`` are
+    supplied; omitting either disables them (so a bare
+    ``_attention_reasons(pr)`` never returns either).
     """
     if pr.is_draft:
+        # A draft is deliberately parked WIP: review, new-commits, ci-failed
+        # (red CI is expected while iterating), and ready never apply. Two
+        # authored-draft cases still warrant action: conflicts (the base
+        # moved underneath it — resolving early is cheaper than later), and
+        # a draft untouched past the staleness threshold (likely forgotten —
+        # time to finish it or mark it ready). Conflict takes precedence,
+        # mirroring 'stale'; the nudge inherits _is_stale's quiet fail
+        # direction and the now/stale_after gating.
+        if "author" not in pr.roles:
+            return set()
+        if pr.mergeable == "CONFLICTING":
+            return {"conflict"}
+        if (
+            now is not None
+            and stale_after is not None
+            and _is_stale(pr.updated_at, now, stale_after)
+        ):
+            return {"stale-draft"}
         return set()
 
     reasons: set[str] = set()

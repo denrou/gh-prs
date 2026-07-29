@@ -63,7 +63,7 @@ class TestReviewReason:
         pr = _pr(roles={"review-requested"}, review_decision="")
         assert _attention_reasons(pr) == {"review"}
 
-    def test_draft_never_needs_attention(self):
+    def test_draft_never_needs_review(self):
         pr = _pr(is_draft=True, roles={"review-requested"})
         assert _attention_reasons(pr) == set()
 
@@ -346,8 +346,10 @@ class TestStaleReason:
         pr = self._stale_pr(roles={"review-requested"})
         assert "stale" not in self._reasons(pr)
 
-    def test_draft_is_never_stale(self):
-        assert self._reasons(self._stale_pr(is_draft=True)) == set()
+    def test_draft_is_stale_draft_not_stale(self):
+        # A quiet authored draft gets its own nudge — 'stale' is strictly for
+        # PRs waiting on reviewers.
+        assert self._reasons(self._stale_pr(is_draft=True)) == {"stale-draft"}
 
     def test_disabled_when_no_threshold(self):
         # Omitting now/stale_after (or stale_after=None) turns the nudge off.
@@ -359,6 +361,90 @@ class TestStaleReason:
         # unknown age must not fabricate a nudge on a possibly-fresh PR.
         assert self._reasons(self._stale_pr(updated_at="")) == set()
         assert self._reasons(self._stale_pr(updated_at="not-a-date")) == set()
+
+
+class TestDraftReasons:
+    """Authored drafts: only 'conflict' and the 'stale-draft' nudge can fire."""
+
+    def _draft(self, **overrides) -> PullRequest:
+        # Authored draft, last touched well before _NOW - _STALE_AFTER.
+        base = dict(
+            roles={"author"},
+            is_draft=True,
+            updated_at="2026-07-01T12:00:00Z",
+        )
+        return _pr(**(base | overrides))
+
+    _FRESH = "2026-07-26T12:00:00Z"
+
+    def _reasons(self, pr, now=_NOW, stale_after=_STALE_AFTER):
+        return _attention_reasons(pr, now=now, stale_after=stale_after)
+
+    def test_conflicting_draft_flags_conflict(self):
+        # The base moved underneath the draft; resolving early is cheaper.
+        pr = self._draft(mergeable="CONFLICTING", updated_at=self._FRESH)
+        assert self._reasons(pr) == {"conflict"}
+
+    def test_quiet_draft_flags_stale_draft(self):
+        assert self._reasons(self._draft()) == {"stale-draft"}
+
+    def test_fresh_draft_stays_quiet(self):
+        assert self._reasons(self._draft(updated_at=self._FRESH)) == set()
+
+    def test_conflict_takes_precedence_over_stale_draft(self):
+        pr = self._draft(mergeable="CONFLICTING")
+        assert self._reasons(pr) == {"conflict"}
+
+    def test_failing_ci_on_draft_stays_quiet(self):
+        # Red CI is expected while iterating on a draft.
+        pr = self._draft(checks_state="FAILURE", updated_at=self._FRESH)
+        assert self._reasons(pr) == set()
+
+    def test_failing_ci_does_not_gate_stale_draft(self):
+        # Red CI neither flags nor suppresses the nudge on a quiet draft.
+        pr = self._draft(checks_state="FAILURE")
+        assert self._reasons(pr) == {"stale-draft"}
+
+    def test_unknown_mergeability_still_flags_stale_draft(self):
+        # UNKNOWN (GitHub recomputing mergeability) is not a conflict, and it
+        # must not swallow the nudge on a quiet draft either.
+        pr = self._draft(mergeable="UNKNOWN")
+        assert self._reasons(pr) == {"stale-draft"}
+
+    def test_approved_green_draft_is_not_ready(self):
+        pr = self._draft(
+            review_decision="APPROVED",
+            checks_state="SUCCESS",
+            mergeable="MERGEABLE",
+            updated_at=self._FRESH,
+        )
+        assert self._reasons(pr) == set()
+
+    def test_review_decision_does_not_gate_stale_draft(self):
+        # Unlike 'stale', the nudge is about the parked draft itself, not
+        # about waiting on reviewers — a quiet draft flags regardless of any
+        # review decision on it.
+        pr = self._draft(review_decision="CHANGES_REQUESTED")
+        assert self._reasons(pr) == {"stale-draft"}
+
+    def test_someone_elses_draft_never_flags(self):
+        pr = self._draft(roles={"review-requested"}, mergeable="CONFLICTING")
+        assert self._reasons(pr) == set()
+
+    def test_authored_draft_with_review_requested_role_still_flags(self):
+        # Being asked to review my own draft doesn't strip authorship.
+        pr = self._draft(roles={"author", "review-requested"}, mergeable="CONFLICTING")
+        assert self._reasons(pr) == {"conflict"}
+
+    def test_disabled_when_no_threshold(self):
+        assert _attention_reasons(self._draft()) == set()
+        assert _attention_reasons(self._draft(), now=_NOW, stale_after=None) == set()
+
+    def test_unparseable_updated_at_is_not_stale_draft(self):
+        # Same quiet fail direction as 'stale': an unknown age must not
+        # fabricate a nudge on a possibly-fresh draft.
+        assert self._reasons(self._draft(updated_at="")) == set()
+        assert self._reasons(self._draft(updated_at="not-a-date")) == set()
 
 
 class TestIsStale:

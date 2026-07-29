@@ -43,6 +43,7 @@ _SECTIONS = [
     ("ci-failed", "CI failed", "bold red"),
     ("conflict", "Conflicts to resolve", "bold yellow"),
     ("stale", "Waiting on review — time to nudge", "bold blue"),
+    ("stale-draft", "Drafts gone quiet — finish or mark ready", "bold blue"),
 ]
 
 # Sections listing other people's PRs show the author column.
@@ -239,11 +240,12 @@ def _ref_to_url_and_head(ref: str, repo: str | None) -> tuple[str, str]:
 
 def _config_stale_after(err: Console) -> timedelta | None:
     """The persisted staleness threshold from config.json (or the default on a
-    config error; ``None`` when the user disabled the 'stale' nudge).
+    config error; ``None`` when the user disabled the staleness nudges).
 
     The view may override this per-invocation with ``--stale-after``; snooze
-    capture deliberately uses only this persisted value, so a captured 'stale'
-    reason matches what later (unflagged) views will compute for the PR.
+    capture deliberately uses only this persisted value, so a captured
+    'stale' or 'stale-draft' reason matches what later (unflagged) views will
+    compute for the PR.
     """
     try:
         return load_config().stale_after
@@ -456,7 +458,8 @@ def main(argv: list[str] | None = None) -> int:
         dest="stale_after",
         metavar="DURATION",
         help="flag PRs you created that have gone this long without activity "
-        "while still awaiting review (e.g. 3d, 1w; default 3d, overrides config.json)",
+        "while still awaiting review or still draft "
+        "(e.g. 3d, 1w; default 3d, overrides config.json)",
     )
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
