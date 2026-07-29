@@ -400,6 +400,17 @@ class TestDraftReasons:
         pr = self._draft(checks_state="FAILURE", updated_at=self._FRESH)
         assert self._reasons(pr) == set()
 
+    def test_failing_ci_does_not_gate_stale_draft(self):
+        # Red CI neither flags nor suppresses the nudge on a quiet draft.
+        pr = self._draft(checks_state="FAILURE")
+        assert self._reasons(pr) == {"stale-draft"}
+
+    def test_unknown_mergeability_still_flags_stale_draft(self):
+        # UNKNOWN (GitHub recomputing mergeability) is not a conflict, and it
+        # must not swallow the nudge on a quiet draft either.
+        pr = self._draft(mergeable="UNKNOWN")
+        assert self._reasons(pr) == {"stale-draft"}
+
     def test_approved_green_draft_is_not_ready(self):
         pr = self._draft(
             review_decision="APPROVED",
@@ -419,6 +430,11 @@ class TestDraftReasons:
     def test_someone_elses_draft_never_flags(self):
         pr = self._draft(roles={"review-requested"}, mergeable="CONFLICTING")
         assert self._reasons(pr) == set()
+
+    def test_authored_draft_with_review_requested_role_still_flags(self):
+        # Being asked to review my own draft doesn't strip authorship.
+        pr = self._draft(roles={"author", "review-requested"}, mergeable="CONFLICTING")
+        assert self._reasons(pr) == {"conflict"}
 
     def test_disabled_when_no_threshold(self):
         assert _attention_reasons(self._draft()) == set()

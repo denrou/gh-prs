@@ -273,6 +273,18 @@ class TestAttentionRendering:
         assert "Waiting on review — time to nudge" in out
         assert "octocat" not in out
 
+    def test_stale_draft_section_renders_without_author(self):
+        # 'stale-draft' PRs are my own drafts: no author column, and this is
+        # the one attention section where the (draft) title prefix shows.
+        pr = _pr(1, attention_reasons={"stale-draft"}, author="octocat", is_draft=True)
+        console = Console(no_color=True, force_terminal=False, width=200)
+        with console.capture() as capture:
+            cli._render_attention(console, [pr])
+        out = capture.get()
+        assert "Drafts gone quiet — finish or mark ready" in out
+        assert "(draft)" in out
+        assert "octocat" not in out
+
 
 class TestEscaping:
     def test_title_markup_is_escaped(self):

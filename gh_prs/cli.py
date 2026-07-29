@@ -240,11 +240,12 @@ def _ref_to_url_and_head(ref: str, repo: str | None) -> tuple[str, str]:
 
 def _config_stale_after(err: Console) -> timedelta | None:
     """The persisted staleness threshold from config.json (or the default on a
-    config error; ``None`` when the user disabled the 'stale' nudge).
+    config error; ``None`` when the user disabled the staleness nudges).
 
     The view may override this per-invocation with ``--stale-after``; snooze
-    capture deliberately uses only this persisted value, so a captured 'stale'
-    reason matches what later (unflagged) views will compute for the PR.
+    capture deliberately uses only this persisted value, so a captured
+    'stale' or 'stale-draft' reason matches what later (unflagged) views will
+    compute for the PR.
     """
     try:
         return load_config().stale_after
