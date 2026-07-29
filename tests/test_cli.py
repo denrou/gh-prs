@@ -156,6 +156,8 @@ class TestJsonOutput:
             '"myReviewCommit"',
             '"headRefOid"',
             '"reviewRequestedExplicitly"',
+            '"changesRequestedCommits"',
+            '"hasPendingReviewRequest"',
             '"roles"',
             '"attentionReasons"',
             '"updatedAt"',

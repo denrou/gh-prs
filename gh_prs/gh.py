@@ -52,9 +52,11 @@ _ROLLUP_STATE = {
     "EXPECTED": "PENDING",
 }
 
-# The first: 50 caps on reviewRequests/latestReviews silently truncate on PRs
-# with more than 50 requested reviewers or reviewers; the viewer's own entry
-# could then be missed (false-negative review and new-commits detection).
+# The first: 50 caps on reviewRequests/latestReviews/latestOpinionatedReviews
+# silently truncate on PRs with more than 50 requested reviewers or reviewers;
+# the viewer's own entry could then be missed (false-negative review and
+# new-commits detection), or a standing changes-requested review hidden
+# (which only ever suppresses the 'stale' nudge, never fabricates it).
 # fetch_prs surfaces the reviewed-by contradiction through on_warning.
 _PR_FRAGMENT = """
 fragment prFields on PullRequest {
@@ -73,6 +75,7 @@ fragment prFields on PullRequest {
     nodes { requestedReviewer { __typename ... on User { login } } }
   }
   latestReviews(first: 50) { nodes { author { login } state commit { oid } } }
+  latestOpinionatedReviews(first: 50) { nodes { state commit { oid } } }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
 }
 """
@@ -118,6 +121,14 @@ class PullRequest:
     # True when the current user is personally on the requested-reviewers
     # list (not merely through a team).
     review_requested_explicitly: bool = False
+    # Oid of the commit each *standing* CHANGES_REQUESTED review was submitted
+    # against ("" for one GitHub no longer links a commit to). Empty when no
+    # reviewer currently stands on changes-requested. Sourced from
+    # latestOpinionatedReviews, which unlike latestReviews survives a
+    # re-request (see from_graphql).
+    changes_requested_commits: tuple[str, ...] = ()
+    # True when at least one review request is pending, from a user or a team.
+    has_pending_review_request: bool = False
     roles: set[str] = field(default_factory=set)
     # Reasons this PR needs the current user's attention (e.g. {"review", "ready"}).
     attention_reasons: set[str] = field(default_factory=set)
@@ -151,8 +162,24 @@ class PullRequest:
                 my_review_commit = ((review.get("commit") or {}).get("oid")) or ""
                 break
 
+        # Standing changes-requested reviews, the ones reviewDecision is itself
+        # derived from. latestOpinionatedReviews — not latestReviews — is the
+        # source: it keeps only each reviewer's most recent APPROVED /
+        # CHANGES_REQUESTED (a later comment-review doesn't unseat it), and,
+        # crucially, it survives a re-request. GitHub drops a reviewer from
+        # latestReviews the moment their review is re-requested, which is
+        # precisely the "author answered and handed it back" state the 'stale'
+        # nudge needs to recognize.
+        opinionated = (node.get("latestOpinionatedReviews") or {}).get("nodes") or []
+        changes_requested_commits = [
+            ((review or {}).get("commit") or {}).get("oid") or ""
+            for review in opinionated
+            if (review or {}).get("state") == "CHANGES_REQUESTED"
+        ]
+
         # Only User reviewers carry a login in the fragment; a request routed
-        # through a Team therefore never matches.
+        # through a Team therefore never matches `explicit` — but it is still
+        # a pending request, so it counts toward has_pending_review_request.
         requests = (node.get("reviewRequests") or {}).get("nodes") or []
         explicit = bool(current_user) and any(
             ((r or {}).get("requestedReviewer") or {}).get("login") == current_user
@@ -178,6 +205,8 @@ class PullRequest:
             my_review_commit=my_review_commit,
             head_ref_oid=node.get("headRefOid") or "",
             review_requested_explicitly=explicit,
+            changes_requested_commits=tuple(changes_requested_commits),
+            has_pending_review_request=bool(requests),
         )
 
     @property
@@ -498,6 +527,24 @@ def _is_stale(updated_at: str, now: datetime, stale_after: timedelta) -> bool:
     return now - updated >= stale_after
 
 
+def _changes_requested_addressed(pr: PullRequest) -> bool:
+    """True when every standing changes-requested review predates the head.
+
+    Read as "the author has pushed something since the last reviewer said no".
+    It does not (and cannot) prove the new commits actually fix anything —
+    only that the review no longer describes the current state of the branch.
+
+    Inherits _is_stale's quiet fail direction rather than the module's usual
+    one, because its only caller is the 'stale' nudge: no changes-requested
+    review in hand (none standing, or the 50-node cap hid one), no head oid,
+    or a review GitHub no longer links a commit to all return False — "not
+    addressed" — which keeps the nudge silent instead of fabricating it.
+    """
+    if not pr.changes_requested_commits or not pr.head_ref_oid:
+        return False
+    return all(oid and oid != pr.head_ref_oid for oid in pr.changes_requested_commits)
+
+
 def _attention_reasons(
     pr: PullRequest,
     now: datetime | None = None,
@@ -596,10 +643,25 @@ def _attention_reasons(
         ):
             reasons.add("ready")
 
+        # Still awaiting review: not yet APPROVED (that's waiting to merge,
+        # not a reviewer nudge), and not a CHANGES_REQUESTED I am still
+        # reworking. GitHub keeps reporting CHANGES_REQUESTED long after the
+        # author has answered it — the decision only clears when a reviewer
+        # submits a *new* review, so a re-requested reviewer who never comes
+        # back leaves it stuck there indefinitely. The ball is back in the
+        # reviewers' court once both halves of "over to you" hold: every
+        # standing changes-requested review is against a superseded commit,
+        # and a review request is pending again. Requiring the pending request
+        # is what keeps a push that was never re-requested — the author's own
+        # unfinished business, by GitHub convention — out of the nudge.
+        awaiting_review = pr.review_decision != "APPROVED" and (
+            pr.review_decision != "CHANGES_REQUESTED"
+            or (pr.has_pending_review_request and _changes_requested_addressed(pr))
+        )
+
         # A soft nudge for a PR that is simply waiting on reviewers, too long:
         # nothing above fired (so there's no action for me — no conflict,
-        # failing CI, or ready-to-ship), it is still awaiting review (not yet
-        # APPROVED, and the author isn't reworking a CHANGES_REQUESTED), yet it
+        # failing CI, or ready-to-ship), it is still awaiting review, yet it
         # has sat untouched past the staleness threshold. Time to ping the
         # reviewers. Unlike the reasons above, an unknown age never fires this
         # (see _is_stale); disabled when now/stale_after aren't supplied.
@@ -607,7 +669,7 @@ def _attention_reasons(
             not reasons
             and now is not None
             and stale_after is not None
-            and pr.review_decision not in ("APPROVED", "CHANGES_REQUESTED")
+            and awaiting_review
             and _is_stale(pr.updated_at, now, stale_after)
         ):
             reasons.add("stale")

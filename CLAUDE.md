@@ -105,11 +105,33 @@ A non-draft PR needs attention when any of these hold:
 - **ci-failed** — you authored it and a check is failing.
 - **conflict** — you authored it and it has merge conflicts (independent of
   `ci-failed`; a PR can have both).
-- **stale** — a soft nudge: you authored it, it's still awaiting review (not
-  yet `APPROVED`, and not `CHANGES_REQUESTED` — the author isn't reworking
-  it), nothing else actionable fired (`not reasons`, so no `ready`/`ci-failed`
+- **stale** — a soft nudge: you authored it, it's still awaiting review,
+  nothing else actionable fired (`not reasons`, so no `ready`/`ci-failed`
   /`conflict`), and it has gone untouched (`updatedAt`) longer than the
-  staleness threshold — time to ping the reviewers. The threshold is
+  staleness threshold — time to ping the reviewers. "Awaiting review" means
+  not yet `APPROVED` (that's waiting to merge, not a reviewer nudge) and not a
+  `CHANGES_REQUESTED` you are still reworking — with one carve-out, because
+  GitHub keeps reporting `CHANGES_REQUESTED` long after the author has
+  answered it (the decision only clears when a reviewer submits a _new_
+  review, so a re-requested reviewer who never comes back leaves it stuck
+  there forever). The ball counts as back in the reviewers' court when both
+  halves of "over to you" hold: every standing changes-requested review is
+  against a superseded commit (`_changes_requested_addressed` — each entry in
+  `changes_requested_commits` is an oid ≠ `headRefOid`) _and_ a review request
+  is pending again (`has_pending_review_request`, user or team). Requiring the
+  pending request is what keeps a push that was never re-requested — the
+  author's own unfinished business, by GitHub convention — out of the nudge.
+  `changes_requested_commits` comes from `latestOpinionatedReviews`, **not**
+  `latestReviews`: GitHub drops a reviewer from `latestReviews` the moment
+  their review is re-requested, which is exactly the state this carve-out has
+  to recognize, whereas `latestOpinionatedReviews` keeps each reviewer's most
+  recent `APPROVED`/`CHANGES_REQUESTED` across the re-request (and isn't
+  unseated by a later comment-review) — the same set `reviewDecision` is
+  derived from. `_changes_requested_addressed` follows `_is_stale`'s quiet
+  fail direction rather than the house one, since the nudge is its only
+  caller: no standing review in hand (none, or the 50-node cap hid one), no
+  `headRefOid`, or a review GitHub no longer links a commit to all read as
+  _not_ answered and keep the nudge silent. The threshold is
   `DEFAULT_STALE_AFTER` (3 days), overridable via `config.json`'s
   `stale_after` or the `--stale-after` flag. This reason is the one place
   that **inverts** the house fail-safe: `_is_stale` treats a missing /

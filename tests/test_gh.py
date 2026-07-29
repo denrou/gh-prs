@@ -48,6 +48,7 @@ def _node(**overrides) -> dict:
         "author": {"login": "octocat"},
         "reviewRequests": {"nodes": []},
         "latestReviews": {"nodes": []},
+        "latestOpinionatedReviews": {"nodes": []},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": None}}]},
     }
     node.update(overrides)
@@ -326,6 +327,65 @@ class TestStaleReason:
         pr = self._stale_pr(review_decision="CHANGES_REQUESTED")
         assert self._reasons(pr) == set()
 
+    def _answered_pr(self, **overrides) -> PullRequest:
+        # Changes were requested against an older commit, the author has since
+        # pushed, and a reviewer is on the hook again. GitHub still reports
+        # CHANGES_REQUESTED (it only clears on a new review), but the PR is
+        # genuinely waiting on reviewers.
+        base = dict(
+            review_decision="CHANGES_REQUESTED",
+            changes_requested_commits=("old111",),
+            head_ref_oid="new222",
+            has_pending_review_request=True,
+        )
+        return self._stale_pr(**(base | overrides))
+
+    def test_answered_changes_requested_is_stale_again(self):
+        assert self._reasons(self._answered_pr()) == {"stale"}
+
+    def test_answered_but_never_re_requested_is_not_stale(self):
+        # No pending request: by GitHub convention the author hasn't handed it
+        # back yet, so this is still their own unfinished business.
+        pr = self._answered_pr(has_pending_review_request=False)
+        assert self._reasons(pr) == set()
+
+    def test_re_requested_without_pushing_is_not_stale(self):
+        # The review still describes the current head — nothing was answered.
+        pr = self._answered_pr(changes_requested_commits=("new222",))
+        assert self._reasons(pr) == set()
+
+    def test_one_unanswered_review_blocks_the_nudge(self):
+        # Two reviewers stand on changes-requested and only one was answered;
+        # the other still describes the head.
+        pr = self._answered_pr(changes_requested_commits=("old111", "new222"))
+        assert self._reasons(pr) == set()
+
+    def test_unlinked_review_commit_is_not_stale(self):
+        # GitHub dropped the reviewed commit (e.g. force-pushed away): unknown
+        # must not be read as answered, or the nudge is fabricated.
+        pr = self._answered_pr(changes_requested_commits=("",))
+        assert self._reasons(pr) == set()
+
+    def test_missing_head_oid_is_not_stale(self):
+        pr = self._answered_pr(head_ref_oid="")
+        assert self._reasons(pr) == set()
+
+    def test_hidden_changes_requested_review_is_not_stale(self):
+        # No standing review in hand — either nobody stands on
+        # changes-requested (yet the decision says otherwise), or the
+        # latestReviews 50-node cap hid it. Both stay quiet.
+        pr = self._answered_pr(changes_requested_commits=())
+        assert self._reasons(pr) == set()
+
+    def test_answered_changes_requested_still_yields_to_real_actions(self):
+        # The nudge is last in line: a conflict or red CI is mine to fix.
+        assert self._reasons(self._answered_pr(mergeable="CONFLICTING")) == {"conflict"}
+        assert self._reasons(self._answered_pr(checks_state="FAILURE")) == {"ci-failed"}
+
+    def test_answered_changes_requested_respects_the_threshold(self):
+        pr = self._answered_pr(updated_at="2026-07-26T12:00:00Z")
+        assert self._reasons(pr) == set()
+
     def test_failing_ci_takes_precedence_over_stale(self):
         pr = self._stale_pr(checks_state="FAILURE")
         assert self._reasons(pr) == {"ci-failed"}
@@ -575,6 +635,65 @@ class TestFromGraphql:
             reviewRequests={"nodes": [{"requestedReviewer": {"__typename": "Team"}}]}
         )
         assert not PullRequest.from_graphql(node, "me").review_requested_explicitly
+
+    def test_team_review_request_still_counts_as_pending(self):
+        # Not *my* request, but the PR is waiting on someone.
+        node = _node(
+            reviewRequests={"nodes": [{"requestedReviewer": {"__typename": "Team"}}]}
+        )
+        assert PullRequest.from_graphql(node, "me").has_pending_review_request
+
+    def test_no_review_request_is_not_pending(self):
+        assert not PullRequest.from_graphql(_node(), "me").has_pending_review_request
+
+    def test_changes_requested_commits_collected_from_opinionated_reviews(self):
+        # Only reviewers standing on CHANGES_REQUESTED contribute; approvals
+        # are skipped.
+        node = _node(
+            latestOpinionatedReviews={
+                "nodes": [
+                    {"state": "CHANGES_REQUESTED", "commit": {"oid": "aaa111"}},
+                    {"state": "APPROVED", "commit": {"oid": "bbb222"}},
+                    {"state": "CHANGES_REQUESTED", "commit": {"oid": "ccc333"}},
+                ]
+            }
+        )
+        pr = PullRequest.from_graphql(node, "me")
+        assert pr.changes_requested_commits == ("aaa111", "ccc333")
+
+    def test_changes_requested_read_from_opinionated_not_latest_reviews(self):
+        # The case the 'stale' nudge exists for: the author answered and
+        # re-requested, so GitHub emptied latestReviews while
+        # latestOpinionatedReviews still carries the standing rejection.
+        node = _node(
+            latestReviews={"nodes": []},
+            latestOpinionatedReviews={
+                "nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": "aaa111"}}]
+            },
+        )
+        pr = PullRequest.from_graphql(node, "me")
+        assert pr.changes_requested_commits == ("aaa111",)
+        # latestReviews stays the source of the viewer's own review.
+        assert pr.my_review_state == ""
+
+    def test_changes_requested_without_commit_keeps_an_empty_slot(self):
+        # A dropped commit link must stay visible as "unknown" rather than be
+        # filtered out — _changes_requested_addressed reads it as not answered.
+        node = _node(
+            latestOpinionatedReviews={
+                "nodes": [{"state": "CHANGES_REQUESTED", "commit": None}]
+            }
+        )
+        assert PullRequest.from_graphql(node, "me").changes_requested_commits == ("",)
+
+    def test_no_changes_requested_review_means_empty_commits(self):
+        assert PullRequest.from_graphql(_node(), "me").changes_requested_commits == ()
+
+    def test_missing_opinionated_reviews_block_means_empty_commits(self):
+        # Shape drift stays quiet: "unknown" reads as not answered, which
+        # suppresses the nudge rather than fabricating it.
+        node = _node(latestOpinionatedReviews=None)
+        assert PullRequest.from_graphql(node, "me").changes_requested_commits == ()
 
     def test_null_author_defaults_to_empty(self):
         pr = PullRequest.from_graphql(_node(author=None), "me")
