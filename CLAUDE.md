@@ -40,8 +40,8 @@ Four-module design inside `gh_prs/`:
 (`author`, `review-requested`, `reviewed-by`, `assignee`, `involves`) in
 parallel threads.
 Each search fetches everything in one shot — review decision, mergeability,
-CI rollup state, `latestReviews`, `reviewRequests`, plus the viewer's login —
-so there is no per-PR enrichment phase. `attention_reasons` is computed by the
+CI rollup state, `latestReviews`, `latestOpinionatedReviews`, `reviewRequests`,
+plus the viewer's login — so there is no per-PR enrichment phase. `attention_reasons` is computed by the
 pure `_attention_reasons()` helper (unit-tested in `tests/test_gh.py`).
 
 Performance notes (measured once; exact figures drift, the ratios hold):
@@ -105,19 +105,50 @@ A non-draft PR needs attention when any of these hold:
 - **ci-failed** — you authored it and a check is failing.
 - **conflict** — you authored it and it has merge conflicts (independent of
   `ci-failed`; a PR can have both).
-- **stale** — a soft nudge: you authored it, it's still awaiting review (not
-  yet `APPROVED`, and not `CHANGES_REQUESTED` — the author isn't reworking
-  it), nothing else actionable fired (`not reasons`, so no `ready`/`ci-failed`
-  /`conflict`), and it has gone untouched (`updatedAt`) longer than the
-  staleness threshold — time to ping the reviewers. The threshold is
-  `DEFAULT_STALE_AFTER` (3 days), overridable via `config.json`'s
-  `stale_after` or the `--stale-after` flag. This reason is the one place
-  that **inverts** the house fail-safe: `_is_stale` treats a missing /
-  unparseable / naive `updatedAt` as _not_ stale, because a nudge is additive
-  and non-actionable — defaulting an unknown age to "stale" would fabricate a
-  reason on a possibly-fresh PR. Disabled entirely when `stale_after` is
-  `None` (config `null`) or `now`/`stale_after` aren't passed to
-  `_attention_reasons` (so a bare `_attention_reasons(pr)` never returns it).
+- **stale** — a soft nudge: you authored it, it's still awaiting review
+  (`_awaiting_review`), nothing else actionable fired (`not reasons`, so no
+  `ready`/`ci-failed`/`conflict`), and it has gone untouched (`updatedAt`)
+  longer than the staleness threshold — time to ping the reviewers. The
+  threshold is `DEFAULT_STALE_AFTER` (3 days), overridable via `config.json`'s
+  `stale_after` or the `--stale-after` flag. Disabled entirely when
+  `stale_after` is `None` (config `null`) or `now`/`stale_after` aren't passed
+  to `_attention_reasons` (so a bare `_attention_reasons(pr)` never returns
+  it). The **stale** family is the one place that **inverts** the house
+  fail-safe — `_is_stale` for the age, `_changes_requested_addressed` for the
+  carve-out below — because a nudge is additive and non-actionable:
+  defaulting an unknown to "stale" would fabricate a reason on a PR that may
+  be perfectly fresh, or genuinely the author's to rework.
+
+  "Awaiting review" means not yet `APPROVED` (that's waiting to merge, not a
+  reviewer nudge) and not a `CHANGES_REQUESTED` you are still reworking — with
+  one carve-out. GitHub keeps reporting `CHANGES_REQUESTED` long after the
+  author has answered it: the decision clears only when a reviewer submits a
+  new _opinionated_ review (a comment-review doesn't unseat it) or someone
+  dismisses theirs, so a re-requested reviewer who never comes back leaves it
+  stuck there indefinitely. The ball counts as back in the reviewers' court
+  when both hold: every standing changes-requested review is against a
+  superseded commit (`_changes_requested_addressed` — each entry in
+  `changes_requested_commits` is an oid ≠ `headRefOid`) _and_ a review request
+  is pending (`has_pending_review_request`, user or team). That second half is
+  deliberately weak: `reviewRequests` carries no timestamp, so a request
+  pending since the PR opened can't be told apart from a fresh re-request — it
+  means somebody is on the hook, not that the author handed the PR back.
+
+  `changes_requested_commits` comes from `latestOpinionatedReviews`, **not**
+  `latestReviews`: GitHub documents the latter as the reviews "that are not
+  also pending review", so re-requesting a reviewer drops their review from it
+  entirely — exactly the state this carve-out has to recognize.
+  `latestOpinionatedReviews` keeps each reviewer's most recent opinionated
+  review across the re-request; it's normally the set `reviewDecision` is
+  derived from, though the two can disagree (`reviewDecision` also answers to
+  branch protection, and the connection isn't limited to writers). Every
+  uncertainty reads as _not_ answered and keeps the nudge silent: no standing
+  review in hand (nobody objects, the data is missing, or the cap hid them
+  all), no `headRefOid`, or any review whose commit is unknown. That last case
+  covers the `first: 50` cap — `all()` over a truncated set is _weaker_ than
+  over the whole one, so a hidden review could otherwise fabricate the nudge;
+  `from_graphql` appends an `""` marker whenever the connection comes back
+  full (`_REVIEW_PAGE_LIMIT`).
 
 Drafts are deliberately parked WIP: **review**, **new-commits**, **ci-failed**
 (red CI is expected while iterating), and **ready** never fire on them. Two

@@ -32,7 +32,11 @@ By default it shows only the PRs that need your attention:
   (3 days by default). There's nothing for _you_ to do — the code is fine, CI
   is green, no conflicts — but it has been sitting long enough that pinging the
   reviewers is warranted. Any new activity (a comment, a commit) resets the
-  clock, so it won't nag while there's discussion. Change the threshold with
+  clock, so it won't nag while there's discussion. A PR GitHub still labels
+  "changes requested" shows up here too, once you've pushed past every
+  outstanding review and a reviewer is on the hook again — GitHub leaves that
+  label in place until someone reviews afresh, so without this the PR would
+  stay invisible no matter how long it waited. Change the threshold with
   `--stale-after 5d` or the `stale_after` config setting; set it to `null` in
   the config to turn the nudge off entirely.
 - **Drafts gone quiet — finish or mark ready** — draft PRs you created that
