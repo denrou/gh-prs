@@ -373,8 +373,23 @@ class TestStaleReason:
     def test_hidden_changes_requested_review_is_not_stale(self):
         # No standing review in hand — either nobody stands on
         # changes-requested (yet the decision says otherwise), or the
-        # latestReviews 50-node cap hid it. Both stay quiet.
+        # latestOpinionatedReviews 50-node cap hid them all. Both stay quiet.
         pr = self._answered_pr(changes_requested_commits=())
+        assert self._reasons(pr) == set()
+
+    def test_cap_marker_blocks_the_nudge(self):
+        # from_graphql appends an unknown ("") slot when the connection is at
+        # the cap: a review hidden by truncation may still be against the head,
+        # so the visible ones must not be read as the whole set.
+        pr = self._answered_pr(changes_requested_commits=("old111", ""))
+        assert self._reasons(pr) == set()
+
+    def test_approved_is_never_stale_even_when_answered(self):
+        # The APPROVED short-circuit must not be reachable around: approved is
+        # waiting to merge, whatever the review history looks like. Guards the
+        # nesting in _awaiting_review — flattening it to a single `or` still
+        # passes every other test in this class.
+        pr = self._answered_pr(review_decision="APPROVED", mergeable="UNKNOWN")
         assert self._reasons(pr) == set()
 
     def test_answered_changes_requested_still_yields_to_real_actions(self):
@@ -531,6 +546,26 @@ class TestIsStale:
         assert _is_stale("2026-07-01T12:00:00", _NOW, _STALE_AFTER) is False
 
 
+class TestPrFragment:
+    def test_review_connections_match_the_page_limit_constant(self):
+        # _REVIEW_PAGE_LIMIT drives the at-cap unknown marker in from_graphql,
+        # but the fragment is a plain literal, so the two can drift apart
+        # silently. All three review connections must use the constant.
+        assert gh._PR_FRAGMENT.count(f"first: {gh._REVIEW_PAGE_LIMIT}") == 3, (
+            "reviewRequests / latestReviews / latestOpinionatedReviews"
+        )
+
+    def test_fragment_requests_every_field_the_parser_reads(self):
+        for field in (
+            "headRefOid",
+            "reviewRequests",
+            "latestReviews",
+            "latestOpinionatedReviews",
+            "statusCheckRollup",
+        ):
+            assert field in gh._PR_FRAGMENT, field
+
+
 class TestFromGraphql:
     def test_full_node(self):
         pr = PullRequest.from_graphql(_node(), "me")
@@ -662,19 +697,78 @@ class TestFromGraphql:
         assert pr.changes_requested_commits == ("aaa111", "ccc333")
 
     def test_changes_requested_read_from_opinionated_not_latest_reviews(self):
-        # The case the 'stale' nudge exists for: the author answered and
+        # The case the carve-out exists for: the author answered and
         # re-requested, so GitHub emptied latestReviews while
         # latestOpinionatedReviews still carries the standing rejection.
         node = _node(
             latestReviews={"nodes": []},
             latestOpinionatedReviews={
-                "nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": "aaa111"}}]
+                "nodes": [
+                    {
+                        "author": {"login": "me"},
+                        "state": "CHANGES_REQUESTED",
+                        "commit": {"oid": "aaa111"},
+                    }
+                ]
             },
         )
         pr = PullRequest.from_graphql(node, "me")
         assert pr.changes_requested_commits == ("aaa111",)
-        # latestReviews stays the source of the viewer's own review.
-        assert pr.my_review_state == ""
+        # latestReviews stays the sole source of the viewer's own review: the
+        # opinionated entry is the viewer's here, and must not leak into it.
+        assert (pr.my_review_state, pr.my_review_commit) == ("", "")
+
+    def test_at_cap_appends_unknown_slot(self):
+        # A full page means a standing review may be hidden beyond it.
+        node = _node(
+            latestOpinionatedReviews={
+                "nodes": [
+                    {"state": "CHANGES_REQUESTED", "commit": {"oid": f"old{i}"}}
+                    for i in range(gh._REVIEW_PAGE_LIMIT)
+                ]
+            }
+        )
+        commits = PullRequest.from_graphql(node, "me").changes_requested_commits
+        assert len(commits) == gh._REVIEW_PAGE_LIMIT + 1
+        assert commits[-1] == ""
+
+    def test_at_cap_with_no_standing_review_stays_empty(self):
+        # Empty already reads as unknown; no marker needed.
+        node = _node(
+            latestOpinionatedReviews={
+                "nodes": [
+                    {"state": "APPROVED", "commit": {"oid": f"ok{i}"}}
+                    for i in range(gh._REVIEW_PAGE_LIMIT)
+                ]
+            }
+        )
+        assert PullRequest.from_graphql(node, "me").changes_requested_commits == ()
+
+    def test_below_cap_appends_nothing(self):
+        node = _node(
+            latestOpinionatedReviews={
+                "nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": "aaa111"}}]
+            }
+        )
+        assert PullRequest.from_graphql(node, "me").changes_requested_commits == (
+            "aaa111",
+        )
+
+    def test_null_opinionated_node_kept_as_unknown(self):
+        # Shape drift must not be silently dropped: a null node could have been
+        # a standing review, so it becomes an unknown slot rather than nothing.
+        node = _node(
+            latestOpinionatedReviews={
+                "nodes": [
+                    None,
+                    {"state": "CHANGES_REQUESTED", "commit": {"oid": "aaa111"}},
+                ]
+            }
+        )
+        assert PullRequest.from_graphql(node, "me").changes_requested_commits == (
+            "",
+            "aaa111",
+        )
 
     def test_changes_requested_without_commit_keeps_an_empty_slot(self):
         # A dropped commit link must stay visible as "unknown" rather than be

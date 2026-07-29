@@ -42,6 +42,11 @@ ALL_QUALIFIERS: tuple[str, ...] = tuple(_SEARCH_FILTERS)
 # open PRs than this are silently truncated.
 _SEARCH_LIMIT = 100
 
+# Per-PR cap on the review connections. Must stay in sync with the `first:`
+# arguments in _PR_FRAGMENT — pinned by a test, since the fragment is a plain
+# literal (interpolating it would mean escaping every GraphQL brace).
+_REVIEW_PAGE_LIMIT = 50
+
 # GraphQL statusCheckRollup.state → our normalized checks_state. Unknown
 # states map to PENDING so "unrecognized" can never mean "pass".
 _ROLLUP_STATE = {
@@ -55,9 +60,11 @@ _ROLLUP_STATE = {
 # The first: 50 caps on reviewRequests/latestReviews/latestOpinionatedReviews
 # silently truncate on PRs with more than 50 requested reviewers or reviewers;
 # the viewer's own entry could then be missed (false-negative review and
-# new-commits detection), or a standing changes-requested review hidden
-# (which only ever suppresses the 'stale' nudge, never fabricates it).
-# fetch_prs surfaces the reviewed-by contradiction through on_warning.
+# new-commits detection). fetch_prs surfaces the reviewed-by contradiction
+# through on_warning. A truncated changes-requested review could otherwise
+# *fabricate* the 'stale' nudge rather than suppress it — `all()` over a
+# truncated set is weaker than over the whole one — so from_graphql records an
+# unknown marker at the cap; see changes_requested_commits.
 _PR_FRAGMENT = """
 fragment prFields on PullRequest {
   number
@@ -122,10 +129,12 @@ class PullRequest:
     # list (not merely through a team).
     review_requested_explicitly: bool = False
     # Oid of the commit each *standing* CHANGES_REQUESTED review was submitted
-    # against ("" for one GitHub no longer links a commit to). Empty when no
-    # reviewer currently stands on changes-requested. Sourced from
-    # latestOpinionatedReviews, which unlike latestReviews survives a
-    # re-request (see from_graphql).
+    # against. An "" entry means "one stands, but against an unknown commit" —
+    # GitHub no longer links one, the node was null, or the 50-node cap may be
+    # hiding a review. Empty when nobody stands on changes-requested *or* the
+    # data is missing entirely, so consumers must read empty as "unknown", not
+    # as "nobody objects". Sourced from latestOpinionatedReviews, which unlike
+    # latestReviews survives a re-request (see from_graphql).
     changes_requested_commits: tuple[str, ...] = ()
     # True when at least one review request is pending, from a user or a team.
     has_pending_review_request: bool = False
@@ -162,20 +171,35 @@ class PullRequest:
                 my_review_commit = ((review.get("commit") or {}).get("oid")) or ""
                 break
 
-        # Standing changes-requested reviews, the ones reviewDecision is itself
-        # derived from. latestOpinionatedReviews — not latestReviews — is the
-        # source: it keeps only each reviewer's most recent APPROVED /
-        # CHANGES_REQUESTED (a later comment-review doesn't unseat it), and,
-        # crucially, it survives a re-request. GitHub drops a reviewer from
-        # latestReviews the moment their review is re-requested, which is
-        # precisely the "author answered and handed it back" state the 'stale'
-        # nudge needs to recognize.
+        # Standing changes-requested reviews — normally the ones reviewDecision
+        # is derived from, though the two can disagree (reviewDecision also
+        # answers to branch protection, and this connection isn't limited to
+        # writers), which is exactly why _changes_requested_addressed treats an
+        # empty list as "unknown" rather than "nobody objects".
+        #
+        # latestOpinionatedReviews — not latestReviews — is the source, because
+        # it survives a re-request. GitHub documents latestReviews as the
+        # reviews "that are not also pending review", so re-requesting a
+        # reviewer drops their review from it entirely: precisely the "author
+        # answered and handed it back" state the 'stale' nudge must recognize.
+        # Observed (the field is undocumented beyond its name): it keeps each
+        # reviewer's most recent opinionated review, and a later comment-review
+        # doesn't unseat it. Only CHANGES_REQUESTED entries are collected here.
         opinionated = (node.get("latestOpinionatedReviews") or {}).get("nodes") or []
         changes_requested_commits = [
             ((review or {}).get("commit") or {}).get("oid") or ""
             for review in opinionated
-            if (review or {}).get("state") == "CHANGES_REQUESTED"
+            # A null node is shape drift, not an approval: keep it as an
+            # unknown ("") slot rather than dropping it, which would let the
+            # nudge read the survivors as the whole set.
+            if review is None or review.get("state") == "CHANGES_REQUESTED"
         ]
+        # At the cap, a standing changes-requested review may be hidden. Record
+        # one unknown slot so _changes_requested_addressed reads "not answered"
+        # instead of assuming the visible reviews are all of them. Skipped when
+        # nothing is standing — an empty list already reads as unknown.
+        if len(opinionated) >= _REVIEW_PAGE_LIMIT and changes_requested_commits:
+            changes_requested_commits.append("")
 
         # Only User reviewers carry a login in the fragment; a request routed
         # through a Team therefore never matches `explicit` — but it is still
@@ -479,7 +503,10 @@ def fetch_prs(
                 continue
             try:
                 pr = PullRequest.from_graphql(node, viewer)
-            except (KeyError, TypeError) as e:
+            # AttributeError covers a block arriving as a non-dict (`.get` on a
+            # list): the module's contract is that any deviation from the
+            # expected envelope surfaces as GhError, never a raw traceback.
+            except (KeyError, TypeError, AttributeError) as e:
                 raise GhError(f"Failed to parse PR data: {e!r}") from e
             if pr.id in seen:
                 seen[pr.id].roles.add(qualifier)
@@ -528,21 +555,51 @@ def _is_stale(updated_at: str, now: datetime, stale_after: timedelta) -> bool:
 
 
 def _changes_requested_addressed(pr: PullRequest) -> bool:
-    """True when every standing changes-requested review predates the head.
+    """True when a changes-requested review stands and none is against the head.
 
-    Read as "the author has pushed something since the last reviewer said no".
-    It does not (and cannot) prove the new commits actually fix anything —
-    only that the review no longer describes the current state of the branch.
+    Read as "the author has pushed something since the reviewers said no". It
+    does not (and cannot) prove the new commits actually fix anything — only
+    that no standing review still describes the current state of the branch.
+    Commit identity is compared, not order, so a force-push that rewinds the
+    branch also counts (as it should — the reviewed state is gone either way).
 
     Inherits _is_stale's quiet fail direction rather than the module's usual
-    one, because its only caller is the 'stale' nudge: no changes-requested
-    review in hand (none standing, or the 50-node cap hid one), no head oid,
-    or a review GitHub no longer links a commit to all return False — "not
-    addressed" — which keeps the nudge silent instead of fabricating it.
+    one, because its only caller is the 'stale' nudge. Every uncertainty
+    returns False — "not addressed", nudge stays silent: no standing review in
+    hand at all (nobody objects, the data is missing, or the cap hid them all),
+    no head oid to compare against, or any review whose commit is unknown —
+    including the marker from_graphql records when the 50-node cap may be
+    hiding one. Fabricating a nudge on a PR that is genuinely the author's to
+    rework is the failure this direction exists to prevent.
     """
     if not pr.changes_requested_commits or not pr.head_ref_oid:
         return False
     return all(oid and oid != pr.head_ref_oid for oid in pr.changes_requested_commits)
+
+
+def _awaiting_review(pr: PullRequest) -> bool:
+    """True when an authored PR is still waiting on its reviewers.
+
+    Not yet APPROVED (that's waiting to merge, not a reviewer nudge), and not a
+    CHANGES_REQUESTED the author is still reworking — with one carve-out.
+    GitHub keeps reporting CHANGES_REQUESTED long after the author has answered
+    it: the decision clears only when a reviewer submits a new *opinionated*
+    review (a comment-review doesn't unseat it) or someone dismisses theirs, so
+    a re-requested reviewer who never comes back leaves it stuck indefinitely.
+
+    The ball counts as back in the reviewers' court when every standing
+    changes-requested review is against a superseded commit and a review
+    request is pending. That second half is deliberately weak: reviewRequests
+    carries no timestamp, so a request pending since the PR opened can't be
+    told apart from a fresh re-request. It still means somebody is on the hook,
+    which is enough for an additive nudge — but it does not prove the author
+    handed the PR back.
+    """
+    if pr.review_decision == "APPROVED":
+        return False
+    if pr.review_decision != "CHANGES_REQUESTED":
+        return True
+    return pr.has_pending_review_request and _changes_requested_addressed(pr)
 
 
 def _attention_reasons(
@@ -643,33 +700,18 @@ def _attention_reasons(
         ):
             reasons.add("ready")
 
-        # Still awaiting review: not yet APPROVED (that's waiting to merge,
-        # not a reviewer nudge), and not a CHANGES_REQUESTED I am still
-        # reworking. GitHub keeps reporting CHANGES_REQUESTED long after the
-        # author has answered it — the decision only clears when a reviewer
-        # submits a *new* review, so a re-requested reviewer who never comes
-        # back leaves it stuck there indefinitely. The ball is back in the
-        # reviewers' court once both halves of "over to you" hold: every
-        # standing changes-requested review is against a superseded commit,
-        # and a review request is pending again. Requiring the pending request
-        # is what keeps a push that was never re-requested — the author's own
-        # unfinished business, by GitHub convention — out of the nudge.
-        awaiting_review = pr.review_decision != "APPROVED" and (
-            pr.review_decision != "CHANGES_REQUESTED"
-            or (pr.has_pending_review_request and _changes_requested_addressed(pr))
-        )
-
         # A soft nudge for a PR that is simply waiting on reviewers, too long:
         # nothing above fired (so there's no action for me — no conflict,
-        # failing CI, or ready-to-ship), it is still awaiting review, yet it
-        # has sat untouched past the staleness threshold. Time to ping the
-        # reviewers. Unlike the reasons above, an unknown age never fires this
-        # (see _is_stale); disabled when now/stale_after aren't supplied.
+        # failing CI, or ready-to-ship), it is still awaiting review (see
+        # _awaiting_review for the CHANGES_REQUESTED carve-out), yet it has sat
+        # untouched past the staleness threshold. Time to ping the reviewers.
+        # Unlike the reasons above, an unknown age never fires this (see
+        # _is_stale); disabled when now/stale_after aren't supplied.
         if (
             not reasons
             and now is not None
             and stale_after is not None
-            and awaiting_review
+            and _awaiting_review(pr)
             and _is_stale(pr.updated_at, now, stale_after)
         ):
             reasons.add("stale")
