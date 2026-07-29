@@ -1,6 +1,6 @@
 [project]
 name = "gh-prs"
-version = "0.9.0"
+version = "0.9.1"
 description = "CLI for listing GitHub pull requests that need your attention, powered by gh CLI"
 readme = "README.md"
 authors = [{ name = "Denis Roussel", email = "deroussel@gmail.com" }]
