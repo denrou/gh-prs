@@ -119,13 +119,28 @@ A non-draft PR needs attention when any of these hold:
   `None` (config `null`) or `now`/`stale_after` aren't passed to
   `_attention_reasons` (so a bare `_attention_reasons(pr)` never returns it).
 
+Drafts are deliberately parked WIP: **review**, **new-commits**, **ci-failed**
+(red CI is expected while iterating), and **ready** never fire on them. Two
+authored-draft reasons do:
+
+- **conflict** — same meaning as above: the base moved underneath the draft,
+  and resolving early is cheaper than later.
+- **stale-draft** — the draft counterpart of **stale**: the draft has sat
+  untouched (`updatedAt`) past the same staleness threshold — likely
+  forgotten; time to finish it, mark it ready, or close it. Fires regardless
+  of any review decision on the draft (the nudge is about the parked draft,
+  not about waiting on reviewers), is suppressed while the draft is
+  conflicting (**conflict** takes precedence), and shares **stale**'s
+  inverted fail direction (`_is_stale`) and `now`/`stale_after` gating.
+
 ### Configuration (`config.py`, applied in `cli.py`)
 
 User settings live in `$XDG_CONFIG_HOME/gh-prs/config.json`, separate from the
 machine-managed `snooze.json` (opposite fail-safe needs; a hand-edit must not
 be able to corrupt snooze state). Today the only key is `stale_after` — a
 duration string (`"3d"`, `"1w"`) parsed by `snooze.parse_duration`, or `null`
-to disable the **stale** nudge. Only the view path reads it, and it degrades
+to disable the **stale** and **stale-draft** nudges. Only the view path reads
+it, and it degrades
 to defaults with an on-stderr warning on any error (the tool never writes it,
 so there is nothing to clobber). Resolution order for the threshold:
 `--stale-after` flag → `config.json` → `DEFAULT_STALE_AFTER`. A bad flag value

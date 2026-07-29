@@ -43,6 +43,7 @@ _SECTIONS = [
     ("ci-failed", "CI failed", "bold red"),
     ("conflict", "Conflicts to resolve", "bold yellow"),
     ("stale", "Waiting on review — time to nudge", "bold blue"),
+    ("stale-draft", "Drafts gone quiet — finish or mark ready", "bold blue"),
 ]
 
 # Sections listing other people's PRs show the author column.
@@ -456,7 +457,8 @@ def main(argv: list[str] | None = None) -> int:
         dest="stale_after",
         metavar="DURATION",
         help="flag PRs you created that have gone this long without activity "
-        "while still awaiting review (e.g. 3d, 1w; default 3d, overrides config.json)",
+        "while still awaiting review or still draft "
+        "(e.g. 3d, 1w; default 3d, overrides config.json)",
     )
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"

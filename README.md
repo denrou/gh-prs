@@ -24,7 +24,9 @@ By default it shows only the PRs that need your attention:
 - **Ready to ship** — PRs you created that are approved, with CI green (or no
   checks) and no conflicts.
 - **CI failed** — PRs you created where a check is failing.
-- **Conflicts to resolve** — PRs you created that have merge conflicts.
+- **Conflicts to resolve** — PRs you created that have merge conflicts,
+  drafts included (the base moved underneath your draft; resolving early is
+  cheaper than later).
 - **Waiting on review — time to nudge** — PRs you created that are still
   awaiting review and have gone quiet longer than the staleness threshold
   (3 days by default). There's nothing for _you_ to do — the code is fine, CI
@@ -33,6 +35,12 @@ By default it shows only the PRs that need your attention:
   clock, so it won't nag while there's discussion. Change the threshold with
   `--stale-after 5d` or the `stale_after` config setting; set it to `null` in
   the config to turn the nudge off entirely.
+- **Drafts gone quiet — finish or mark ready** — draft PRs you created that
+  have sat untouched longer than the same staleness threshold. A fresh draft
+  is deliberately parked work-in-progress and stays out of the way (failing
+  CI included — red checks are expected while iterating), but one that has
+  gone quiet is probably forgotten: finish it, mark it ready, or close it.
+  Shares the **Waiting on review** threshold and off switch.
 
 ## Prerequisites
 
@@ -90,7 +98,7 @@ gh prs snooze 12 34 --for 3d  # …several at once, for a custom window (12h, 3d
 gh prs unsnooze 123         # remove a PR's snooze
 gh prs snooze               # with no arguments: list snoozed PRs
 
-gh prs --stale-after 5d  # flag your review-waiting PRs quiet this long
+gh prs --stale-after 5d  # flag your PRs (review-waiting or draft) quiet this long
 ```
 
 `--count` exits non-zero when fetching fails, so status-bar scripts can tell
@@ -127,14 +135,14 @@ Snoozes are stored locally in `~/.config/gh-prs/snooze.json` (honors
 Settings live in `~/.config/gh-prs/config.json` (honors `$XDG_CONFIG_HOME`),
 separate from the snooze store. It's optional — every setting has a default.
 Today the only key is `stale_after`, the silence threshold for the
-**Waiting on review** nudge:
+**Waiting on review** and **Drafts gone quiet** nudges:
 
 ```json
 { "stale_after": "5d" }
 ```
 
 Accepts the same duration syntax as `--for`/`--stale-after` (`12h`, `3d`,
-`1w`), or `null` to disable the nudge. The `--stale-after` flag overrides the
+`1w`), or `null` to disable both nudges. The `--stale-after` flag overrides the
 file for a single run. An unreadable or invalid config only warns and falls
 back to the 3-day default, so a typo never breaks the tool.
 

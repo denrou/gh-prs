@@ -243,7 +243,15 @@ class TestAttentionRendering:
     def test_every_attention_reason_has_a_section(self):
         # A reason without a section would count toward --count yet never
         # render — the PR would be invisible while "needing attention".
-        emittable = {"review", "new-commits", "ready", "ci-failed", "conflict", "stale"}
+        emittable = {
+            "review",
+            "new-commits",
+            "ready",
+            "ci-failed",
+            "conflict",
+            "stale",
+            "stale-draft",
+        }
         assert emittable == {reason for reason, _, _ in cli._SECTIONS}
 
     def test_new_commits_section_renders_with_author(self):
