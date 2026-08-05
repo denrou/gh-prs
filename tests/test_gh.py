@@ -50,6 +50,7 @@ def _node(**overrides) -> dict:
         "latestReviews": {"nodes": []},
         "latestOpinionatedReviews": {"nodes": []},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": None}}]},
+        "baseRef": {"associatedPullRequests": {"totalCount": 0}},
     }
     node.update(overrides)
     return node
@@ -119,6 +120,15 @@ class TestReviewReason:
             roles={"review-requested"},
             review_decision="APPROVED",
             review_requested_explicitly=True,
+        )
+        assert _attention_reasons(pr) == {"review"}
+
+    def test_stacked_pr_still_needs_review(self):
+        # Reviews happen per-PR in a stack; only 'ready' defers to the parent.
+        pr = _pr(
+            roles={"review-requested"},
+            review_decision="REVIEW_REQUIRED",
+            stacked=True,
         )
         assert _attention_reasons(pr) == {"review"}
 
@@ -281,6 +291,30 @@ class TestAuthorReasons:
             mergeable="CONFLICTING",
         )
         assert _attention_reasons(pr) == {"conflict"}
+
+    def test_stacked_approved_green_is_not_ready(self):
+        # MERGEABLE here means "into the parent PR's branch" — merging now
+        # would fold this PR into its parent, not ship it. Nothing to do
+        # until the parent merges and GitHub retargets this one.
+        pr = _pr(
+            roles={"author"},
+            review_decision="APPROVED",
+            checks_state="SUCCESS",
+            mergeable="MERGEABLE",
+            stacked=True,
+        )
+        assert _attention_reasons(pr) == set()
+
+    def test_stacked_only_gates_ready(self):
+        # Conflicts and failing CI are per-PR concerns; being stacked
+        # doesn't defer them.
+        pr = _pr(
+            roles={"author"},
+            mergeable="CONFLICTING",
+            checks_state="FAILURE",
+            stacked=True,
+        )
+        assert _attention_reasons(pr) == {"conflict", "ci-failed"}
 
 
 class TestStaleReason:
@@ -562,6 +596,8 @@ class TestPrFragment:
             "latestReviews",
             "latestOpinionatedReviews",
             "statusCheckRollup",
+            "baseRef",
+            "associatedPullRequests",
         ):
             assert field in gh._PR_FRAGMENT, field
 
@@ -680,6 +716,23 @@ class TestFromGraphql:
 
     def test_no_review_request_is_not_pending(self):
         assert not PullRequest.from_graphql(_node(), "me").has_pending_review_request
+
+    def test_base_with_no_open_pr_is_not_stacked(self):
+        assert not PullRequest.from_graphql(_node(), "me").stacked
+
+    def test_base_that_heads_an_open_pr_is_stacked(self):
+        node = _node(baseRef={"associatedPullRequests": {"totalCount": 1}})
+        assert PullRequest.from_graphql(node, "me").stacked
+
+    def test_null_base_ref_reads_as_stacked(self):
+        # Positive evidence required, like mergeable: an unknown base must
+        # never count toward "ship it".
+        node = _node(baseRef=None)
+        assert PullRequest.from_graphql(node, "me").stacked
+
+    def test_missing_total_count_reads_as_stacked(self):
+        node = _node(baseRef={"associatedPullRequests": {}})
+        assert PullRequest.from_graphql(node, "me").stacked
 
     def test_changes_requested_commits_collected_from_opinionated_reviews(self):
         # Only reviewers standing on CHANGES_REQUESTED contribute; approvals

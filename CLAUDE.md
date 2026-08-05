@@ -100,8 +100,22 @@ A non-draft PR needs attention when any of these hold:
   When the `latestReviews` 50-node cap hides your review on a `reviewed-by`
   PR, `fetch_prs` reports the contradiction through `on_warning` instead of
   silently skipping the PR.
-- **ready** — you authored it, it's `APPROVED`, CI is green (or none), and it's
-  not conflicting.
+- **ready** — you authored it, it's `APPROVED`, CI is green (or none), it's
+  not conflicting, and it's not **stacked**. A stacked PR is one whose base
+  branch is itself the head of another open PR: GitHub reports it `MERGEABLE`
+  (the merge into the base _branch_ is clean), but merging would fold it into
+  the parent PR rather than ship it. Detection is
+  `baseRef.associatedPullRequests(states: OPEN).totalCount` in the search
+  fragment — that connection only matches PRs whose _head_ is the ref
+  (verified live: a default branch with many open PRs targeting it returns
+  0), so ordinary PRs targeting maintenance branches stay eligible. An
+  unknown count reads as stacked (positive evidence required, like
+  `MERGEABLE`). A suppressed stacked PR shows no reason at all — nothing is
+  actionable on it and the parent PR carries its own reasons — and resurfaces
+  as **ready** when the parent merges and GitHub retargets it to the default
+  branch; explicit views (`-c`/`-a`/`--json`) still list it. Being stacked
+  gates only **ready**: **conflict**, **ci-failed**, and reviewer-side
+  reasons are per-PR concerns and still fire.
 - **ci-failed** — you authored it and a check is failing.
 - **conflict** — you authored it and it has merge conflicts (independent of
   `ci-failed`; a PR can have both).

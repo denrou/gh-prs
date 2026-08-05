@@ -201,6 +201,7 @@ def _to_dict(pr: PullRequest) -> dict[str, Any]:
         "reviewRequestedExplicitly": pr.review_requested_explicitly,
         "changesRequestedCommits": list(pr.changes_requested_commits),
         "hasPendingReviewRequest": pr.has_pending_review_request,
+        "stacked": pr.stacked,
         "roles": sorted(pr.roles),
         "attentionReasons": sorted(pr.attention_reasons),
         "updatedAt": pr.updated_at,
