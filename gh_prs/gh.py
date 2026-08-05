@@ -76,6 +76,7 @@ fragment prFields on PullRequest {
   reviewDecision
   mergeable
   headRefOid
+  baseRef { associatedPullRequests(states: OPEN) { totalCount } }
   repository { nameWithOwner }
   author { login }
   reviewRequests(first: 50) {
@@ -138,6 +139,11 @@ class PullRequest:
     changes_requested_commits: tuple[str, ...] = ()
     # True when at least one review request is pending, from a user or a team.
     has_pending_review_request: bool = False
+    # True when the base branch is itself the head of another open PR — this
+    # PR is stacked on it. GitHub reports such a PR MERGEABLE (the merge into
+    # the base *branch* is clean), but merging would land it in the parent
+    # PR's branch, not the default branch, so it isn't shippable yet.
+    stacked: bool = False
     roles: set[str] = field(default_factory=set)
     # Reasons this PR needs the current user's attention (e.g. {"review", "ready"}).
     attention_reasons: set[str] = field(default_factory=set)
@@ -201,6 +207,18 @@ class PullRequest:
         if len(opinionated) >= _REVIEW_PAGE_LIMIT and changes_requested_commits:
             changes_requested_commits.append("")
 
+        # associatedPullRequests only matches PRs whose *head* is the ref —
+        # PRs merely targeting it don't count — so a positive count means
+        # exactly "an open parent PR exists" (verified live: the base of a
+        # stacked PR returns its parent; a default branch with many open PRs
+        # targeting it returns 0). Ordinary PRs targeting maintenance
+        # branches therefore stay unaffected. A missing or malformed count
+        # reads as stacked — the same positive-evidence rule 'ready' applies
+        # to mergeable: "don't know" must never count toward "ship it".
+        base_prs = (node.get("baseRef") or {}).get("associatedPullRequests") or {}
+        open_base_prs = base_prs.get("totalCount")
+        stacked = not isinstance(open_base_prs, int) or open_base_prs > 0
+
         # Only User reviewers carry a login in the fragment; a request routed
         # through a Team therefore never matches `explicit` — but it is still
         # a pending request, so it counts toward has_pending_review_request.
@@ -231,6 +249,7 @@ class PullRequest:
             review_requested_explicitly=explicit,
             changes_requested_commits=tuple(changes_requested_commits),
             has_pending_review_request=bool(requests),
+            stacked=stacked,
         )
 
     @property
@@ -697,6 +716,13 @@ def _attention_reasons(
             # computed, e.g. right after a push) must not read as "no
             # conflict" — same fail-safe direction as _ROLLUP_STATE.
             and pr.mergeable == "MERGEABLE"
+            # A stacked PR is MERGEABLE only into its parent PR's branch —
+            # merging now would fold it into the parent instead of shipping
+            # it. It stays out of the attention view (there is nothing to do
+            # on it; the parent carries its own reasons) and resurfaces as
+            # ready once the parent merges and GitHub retargets it to the
+            # default branch. Explicit views (-c/-a/--json) still list it.
+            and not pr.stacked
         ):
             reasons.add("ready")
 

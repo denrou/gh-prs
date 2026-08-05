@@ -22,7 +22,11 @@ By default it shows only the PRs that need your attention:
   comment-only review), that section wins; a re-request after your
   still-standing approval keeps it here.
 - **Ready to ship** — PRs you created that are approved, with CI green (or no
-  checks) and no conflicts.
+  checks) and no conflicts. A stacked PR — one whose base branch is itself the
+  head of another open PR — is held back: merging it now would fold it into
+  the parent PR instead of shipping it. It appears here once the parent
+  merges and GitHub retargets it to the default branch; in the meantime the
+  explicit views (`-c`/`-a`) still list it.
 - **CI failed** — PRs you created where a check is failing.
 - **Conflicts to resolve** — PRs you created that have merge conflicts,
   drafts included (the base moved underneath your draft; resolving early is
