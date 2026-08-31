@@ -31,6 +31,11 @@ By default it shows only the PRs that need your attention:
 - **Conflicts to resolve** — PRs you created that have merge conflicts,
   drafts included (the base moved underneath your draft; resolving early is
   cheaper than later).
+- **Unresolved comments — reply or resolve** — PRs you created with an
+  unresolved review thread where someone else has the last word: feedback
+  waiting on your answer. Threads you replied to last don't count — the ball
+  is back in the reviewer's court — so the PR drops out as soon as you've
+  answered (or resolved) everything, and resurfaces if a reviewer follows up.
 - **Waiting on review — time to nudge** — PRs you created that are still
   awaiting review and have gone quiet longer than the staleness threshold
   (3 days by default). There's nothing for _you_ to do — the code is fine, CI

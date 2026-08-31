@@ -57,14 +57,16 @@ _ROLLUP_STATE = {
     "EXPECTED": "PENDING",
 }
 
-# The first: 50 caps on reviewRequests/latestReviews/latestOpinionatedReviews
-# silently truncate on PRs with more than 50 requested reviewers or reviewers;
-# the viewer's own entry could then be missed (false-negative review and
-# new-commits detection). fetch_prs surfaces the reviewed-by contradiction
-# through on_warning. A truncated changes-requested review could otherwise
-# *fabricate* the 'stale' nudge rather than suppress it — `all()` over a
-# truncated set is weaker than over the whole one — so from_graphql records an
-# unknown marker at the cap; see changes_requested_commits.
+# The first: 50 caps on reviewRequests/latestReviews/latestOpinionatedReviews/
+# reviewThreads silently truncate on PRs with more than 50 requested reviewers,
+# reviewers, or review threads; the viewer's own entry could then be missed
+# (false-negative review and new-commits detection), and an unanswered thread
+# could hide beyond the cap (false-negative unresolved detection). fetch_prs
+# surfaces the reviewed-by contradiction and the full-threads case through
+# on_warning. A truncated changes-requested review could otherwise *fabricate*
+# the 'stale' nudge rather than suppress it — `all()` over a truncated set is
+# weaker than over the whole one — so from_graphql records an unknown marker at
+# the cap; see changes_requested_commits.
 _PR_FRAGMENT = """
 fragment prFields on PullRequest {
   number
@@ -84,15 +86,23 @@ fragment prFields on PullRequest {
   }
   latestReviews(first: 50) { nodes { author { login } state commit { oid } } }
   latestOpinionatedReviews(first: 50) { nodes { state commit { oid } } }
+  reviewThreads(first: 50) @include(if: $withThreads) {
+    nodes { isResolved comments(last: 1) { nodes { author { login } } } }
+  }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
 }
 """
 
 # Static query parametrized with GraphQL variables (bound via gh's -f/-F
 # flags), so no untrusted or dynamic text is ever spliced into the query.
+# $withThreads gates the reviewThreads block: hydrating each thread's last
+# comment is the one measurably expensive fragment field (~+1s on the
+# involves search, ~+3% on author; isResolved alone costs nothing), and only
+# the author search's nodes ever feed the authored-only 'unresolved' reason,
+# so only that search pays for it.
 _SEARCH_QUERY = (
     """
-query($q: String!, $limit: Int!) {
+query($q: String!, $limit: Int!, $withThreads: Boolean!) {
   viewer { login }
   results: search(query: $q, type: ISSUE, first: $limit) {
     issueCount
@@ -139,6 +149,16 @@ class PullRequest:
     changes_requested_commits: tuple[str, ...] = ()
     # True when at least one review request is pending, from a user or a team.
     has_pending_review_request: bool = False
+    # True when some unresolved review thread's most recent comment is not the
+    # current user's — on an authored PR, feedback still owed an answer.
+    # Threads where the user has the last word are disregarded (the ball is
+    # back in the reviewer's court); that carve-out requires positive
+    # evidence, so an unknown last commenter still counts as feedback.
+    unresolved_feedback: bool = False
+    # True when the reviewThreads connection came back full: threads beyond
+    # the 50-node cap may be hidden, so unresolved_feedback=False can't be
+    # trusted. fetch_prs reports it through on_warning rather than guessing.
+    review_threads_truncated: bool = False
     # True when the base branch is itself the head of another open PR — this
     # PR is stacked on it. GitHub reports such a PR MERGEABLE (the merge into
     # the base *branch* is clean), but merging would land it in the parent
@@ -219,6 +239,27 @@ class PullRequest:
         open_base_prs = base_prs.get("totalCount")
         stacked = not isinstance(open_base_prs, int) or open_base_prs > 0
 
+        # Unresolved review threads whose last word is someone else's: on an
+        # authored PR, feedback still owed an answer. A thread the viewer
+        # commented on last is disregarded — the ball is back in the
+        # reviewer's court — and that carve-out demands positive evidence: an
+        # unknown last commenter (null author, e.g. a deleted account, or a
+        # missing comments block) still counts as feedback, and a missing
+        # isResolved reads as unresolved. Only a missing threads block stays
+        # quiet — with no evidence any thread exists, flagging would fabricate
+        # the reason on every PR.
+        threads = (node.get("reviewThreads") or {}).get("nodes") or []
+        unresolved_feedback = False
+        for thread in threads:
+            thread = thread or {}
+            if thread.get("isResolved") is True:
+                continue
+            comments = (thread.get("comments") or {}).get("nodes") or [None]
+            last_author = (((comments[-1] or {}).get("author")) or {}).get("login")
+            if not (current_user and last_author == current_user):
+                unresolved_feedback = True
+                break
+
         # Only User reviewers carry a login in the fragment; a request routed
         # through a Team therefore never matches `explicit` — but it is still
         # a pending request, so it counts toward has_pending_review_request.
@@ -249,6 +290,8 @@ class PullRequest:
             review_requested_explicitly=explicit,
             changes_requested_commits=tuple(changes_requested_commits),
             has_pending_review_request=bool(requests),
+            unresolved_feedback=unresolved_feedback,
+            review_threads_truncated=len(threads) >= _REVIEW_PAGE_LIMIT,
             stacked=stacked,
         )
 
@@ -422,7 +465,9 @@ def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
     """Run one qualifier's search; return (viewer_login, PR nodes, issue_count).
 
     ``issue_count`` is the exact server-side match count, which can exceed the
-    ``_SEARCH_LIMIT`` cap on returned nodes.
+    ``_SEARCH_LIMIT`` cap on returned nodes. Only the author search fetches
+    ``reviewThreads`` (see _SEARCH_QUERY); other searches' nodes come back
+    without the block, which from_graphql reads as "no thread data".
     """
     data = _graphql(
         f"Search '{qualifier}'",
@@ -432,6 +477,9 @@ def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
         f"q={_search_string(qualifier)}",
         "-F",
         f"limit={_SEARCH_LIMIT}",
+        "-F",
+        # gh's -F coerces the strings true/false to GraphQL booleans.
+        f"withThreads={'true' if qualifier == 'author' else 'false'}",
     )
     results = data.get("results")
     if not isinstance(results, dict):
@@ -466,10 +514,12 @@ def fetch_prs(
     authored drafts; ``None`` disables both reasons.
 
     ``on_warning`` (if given) receives a message when a search matched more
-    PRs than the cap, and when a PR matched by ``reviewed-by`` carries no
+    PRs than the cap, when a PR matched by ``reviewed-by`` carries no
     parsable own-review (the ``latestReviews`` 50-node cap hid it, so
-    new-commit detection may miss that PR) — either way, degraded coverage
-    is informed rather than silent.
+    new-commit detection may miss that PR), and when an authored PR's
+    ``reviewThreads`` page came back full without flagging 'unresolved' (a
+    hidden thread could carry unanswered feedback) — in every case, degraded
+    coverage is informed rather than silent.
 
     Raises ``GhError`` if any search fails or returns unparseable data: a
     partial result would silently hide PRs, and "error" must never look like
@@ -515,6 +565,9 @@ def fetch_prs(
     # Iterate in qualifier order (not completion order) so the same search's
     # node deterministically provides each PR's field values (first-seen wins;
     # two searches can return slightly different snapshots of the same PR).
+    # 'author' leads every multi-qualifier view (pinned by tests), so an
+    # authored PR's fields always come from the author search — the only one
+    # that fetches reviewThreads, which the 'unresolved' reason depends on.
     for qualifier in qualifiers:
         _, nodes, _ = results[qualifier]
         for node in nodes:
@@ -550,6 +603,23 @@ def fetch_prs(
             on_warning(
                 f"{pr.id}: your review is not among its first 50 latest "
                 "reviews; new-commit detection may miss it"
+            )
+        # The reviewThreads page came back full on an authored PR whose
+        # visible threads didn't flag 'unresolved': a hidden thread could
+        # still carry unanswered feedback. Flagging on that unknown would
+        # fabricate the reason on every 50+-thread PR, so inform instead
+        # (same trade-off as the reviewed-by contradiction above). A flagged
+        # PR needs no warning — it is already surfaced.
+        if (
+            on_warning is not None
+            and not pr.is_draft
+            and "author" in pr.roles
+            and pr.review_threads_truncated
+            and "unresolved" not in pr.attention_reasons
+        ):
+            on_warning(
+                f"{pr.id}: it has more than {_REVIEW_PAGE_LIMIT} review "
+                "threads; unresolved-comment detection may miss some"
             )
     return sorted(seen.values(), key=lambda p: p.updated_at, reverse=True)
 
@@ -725,6 +795,15 @@ def _attention_reasons(
             and not pr.stacked
         ):
             reasons.add("ready")
+
+        # Feedback to answer: an unresolved review thread where someone else
+        # has the last word. Threads the author replied to last were already
+        # disregarded in from_graphql (ball back in the reviewer's court).
+        # Replying or resolving is the author's move regardless of the PR's
+        # other troubles, so this fires independently of conflict/ci-failed —
+        # and alongside ready, where the merge decision is the author's call.
+        if pr.unresolved_feedback:
+            reasons.add("unresolved")
 
         # A soft nudge for a PR that is simply waiting on reviewers, too long:
         # nothing above fired (so there's no action for me — no conflict,

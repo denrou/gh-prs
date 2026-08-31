@@ -251,6 +251,7 @@ class TestAttentionRendering:
             "ready",
             "ci-failed",
             "conflict",
+            "unresolved",
             "stale",
             "stale-draft",
         }
