@@ -41,7 +41,15 @@ Four-module design inside `gh_prs/`:
 parallel threads.
 Each search fetches everything in one shot — review decision, mergeability,
 CI rollup state, `latestReviews`, `latestOpinionatedReviews`, `reviewRequests`,
-plus the viewer's login — so there is no per-PR enrichment phase. `attention_reasons` is computed by the
+`reviewThreads` (resolution state plus each thread's last commenter), plus the
+viewer's login — so there is no per-PR enrichment phase. `reviewThreads` is the
+one exception to "every search fetches everything": an `@include($withThreads)`
+directive limits it to the `author` search, because hydrating each thread's
+last comment is the one measurably expensive fragment field (~+1s on
+`involves`, ~+3% on `author`; `isResolved` alone costs nothing) and only
+author-search nodes ever feed the authored-only **unresolved** reason —
+`author` leads every multi-qualifier view (pinned by tests), so first-seen-wins
+de-duplication always sources an authored PR's fields from that search. `attention_reasons` is computed by the
 pure `_attention_reasons()` helper (unit-tested in `tests/test_gh.py`).
 
 Performance notes (measured once; exact figures drift, the ratios hold):
@@ -119,9 +127,24 @@ A non-draft PR needs attention when any of these hold:
 - **ci-failed** — you authored it and a check is failing.
 - **conflict** — you authored it and it has merge conflicts (independent of
   `ci-failed`; a PR can have both).
+- **unresolved** — you authored it and some unresolved review thread's last
+  comment is someone else's: feedback still owed an answer. A thread you
+  replied to last is disregarded (the ball is back in the reviewer's court) —
+  that carve-out demands positive evidence, so an unknown last commenter
+  (deleted account, missing comments block) still counts as feedback, and a
+  missing `isResolved` reads as unresolved; only a missing `reviewThreads`
+  block stays quiet (no evidence any thread exists — flagging would fabricate
+  the reason on every PR). Fires independently of **conflict**/**ci-failed**
+  and alongside **ready** (merging over an open question is the author's
+  call); as an actionable reason it suppresses **stale**. When the
+  `reviewThreads` 50-node cap comes back full on an authored PR without the
+  reason firing, a hidden thread could carry unanswered feedback —
+  `fetch_prs` reports it through `on_warning` instead of guessing. Thread
+  data rides only on the `author` search (see the loading section), which is
+  also the only search that can grant the `author` role this reason requires.
 - **stale** — a soft nudge: you authored it, it's still awaiting review
   (`_awaiting_review`), nothing else actionable fired (`not reasons`, so no
-  `ready`/`ci-failed`/`conflict`), and it has gone untouched (`updatedAt`)
+  `ready`/`ci-failed`/`conflict`/`unresolved`), and it has gone untouched (`updatedAt`)
   longer than the staleness threshold — time to ping the reviewers. The
   threshold is `DEFAULT_STALE_AFTER` (3 days), overridable via `config.json`'s
   `stale_after` or the `--stale-after` flag. Disabled entirely when

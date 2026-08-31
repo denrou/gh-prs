@@ -49,6 +49,7 @@ def _node(**overrides) -> dict:
         "reviewRequests": {"nodes": []},
         "latestReviews": {"nodes": []},
         "latestOpinionatedReviews": {"nodes": []},
+        "reviewThreads": {"nodes": []},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": None}}]},
         "baseRef": {"associatedPullRequests": {"totalCount": 0}},
     }
@@ -317,6 +318,61 @@ class TestAuthorReasons:
         assert _attention_reasons(pr) == {"conflict", "ci-failed"}
 
 
+class TestUnresolvedReason:
+    """Authored PRs with an unresolved thread someone else spoke last in."""
+
+    def test_unresolved_feedback_flagged(self):
+        pr = _pr(roles={"author"}, unresolved_feedback=True)
+        assert _attention_reasons(pr) == {"unresolved"}
+
+    def test_not_my_pr_never_flags(self):
+        # Reviewer-side attention goes through review/new-commits; answering
+        # the thread is the author's job, not mine.
+        pr = _pr(
+            roles={"review-requested"},
+            review_decision="APPROVED",
+            unresolved_feedback=True,
+        )
+        assert _attention_reasons(pr) == set()
+
+    def test_draft_never_flags(self):
+        # A draft is parked WIP; its feedback can wait with it.
+        pr = _pr(roles={"author"}, is_draft=True, unresolved_feedback=True)
+        assert _attention_reasons(pr) == set()
+
+    def test_fires_alongside_conflict_and_ci_failed(self):
+        pr = _pr(
+            roles={"author"},
+            unresolved_feedback=True,
+            mergeable="CONFLICTING",
+            checks_state="FAILURE",
+        )
+        assert _attention_reasons(pr) == {"unresolved", "conflict", "ci-failed"}
+
+    def test_fires_alongside_ready(self):
+        # Merging over an open question is the author's call — show both.
+        pr = _pr(
+            roles={"author"},
+            review_decision="APPROVED",
+            checks_state="SUCCESS",
+            mergeable="MERGEABLE",
+            unresolved_feedback=True,
+        )
+        assert _attention_reasons(pr) == {"ready", "unresolved"}
+
+    def test_suppresses_the_stale_nudge(self):
+        # Answering feedback is the author's move; nudging the reviewers on
+        # top of it would point the finger the wrong way.
+        pr = _pr(
+            roles={"author"},
+            review_decision="REVIEW_REQUIRED",
+            updated_at="2026-07-01T12:00:00Z",
+            unresolved_feedback=True,
+        )
+        reasons = _attention_reasons(pr, now=_NOW, stale_after=_STALE_AFTER)
+        assert reasons == {"unresolved"}
+
+
 class TestStaleReason:
     """Authored PRs still awaiting review that have gone quiet too long."""
 
@@ -582,11 +638,12 @@ class TestIsStale:
 
 class TestPrFragment:
     def test_review_connections_match_the_page_limit_constant(self):
-        # _REVIEW_PAGE_LIMIT drives the at-cap unknown marker in from_graphql,
-        # but the fragment is a plain literal, so the two can drift apart
-        # silently. All three review connections must use the constant.
-        assert gh._PR_FRAGMENT.count(f"first: {gh._REVIEW_PAGE_LIMIT}") == 3, (
-            "reviewRequests / latestReviews / latestOpinionatedReviews"
+        # _REVIEW_PAGE_LIMIT drives the at-cap unknown marker and the
+        # review_threads_truncated flag in from_graphql, but the fragment is a
+        # plain literal, so the two can drift apart silently. All four review
+        # connections must use the constant.
+        assert gh._PR_FRAGMENT.count(f"first: {gh._REVIEW_PAGE_LIMIT}") == 4, (
+            "reviewRequests / latestReviews / latestOpinionatedReviews / reviewThreads"
         )
 
     def test_fragment_requests_every_field_the_parser_reads(self):
@@ -595,6 +652,8 @@ class TestPrFragment:
             "reviewRequests",
             "latestReviews",
             "latestOpinionatedReviews",
+            "reviewThreads",
+            "isResolved",
             "statusCheckRollup",
             "baseRef",
             "associatedPullRequests",
@@ -864,6 +923,72 @@ class TestFromGraphql:
         node = _node(title="safe\x1b]0;evil\x07 title\x00\x9b31m")
         assert PullRequest.from_graphql(node, "me").title == "safe]0;evil title31m"
 
+    # --- reviewThreads → unresolved_feedback ---
+
+    @staticmethod
+    def _thread(last_commenter: str | None, resolved: bool = False) -> dict:
+        comment = {"author": {"login": last_commenter} if last_commenter else None}
+        return {"isResolved": resolved, "comments": {"nodes": [comment]}}
+
+    def _feedback(self, *threads) -> bool:
+        node = _node(reviewThreads={"nodes": list(threads)})
+        return PullRequest.from_graphql(node, "me").unresolved_feedback
+
+    def test_unresolved_thread_by_someone_else_is_feedback(self):
+        assert self._feedback(self._thread("reviewer")) is True
+
+    def test_unresolved_thread_i_answered_last_is_not_feedback(self):
+        # The ball is back in the reviewer's court.
+        assert self._feedback(self._thread("me")) is False
+
+    def test_resolved_thread_is_not_feedback(self):
+        assert self._feedback(self._thread("reviewer", resolved=True)) is False
+
+    def test_one_unanswered_thread_among_answered_ones_is_feedback(self):
+        assert (
+            self._feedback(
+                self._thread("me"),
+                self._thread("reviewer", resolved=True),
+                self._thread("reviewer"),
+            )
+            is True
+        )
+
+    def test_unknown_last_commenter_is_feedback(self):
+        # The "I answered last" carve-out needs positive evidence; a deleted
+        # account (null author) must not read as "nothing to answer".
+        assert self._feedback(self._thread(None)) is True
+
+    def test_missing_comments_block_is_feedback(self):
+        # Same rule for shape drift inside an existing unresolved thread.
+        assert self._feedback({"isResolved": False, "comments": None}) is True
+
+    def test_missing_is_resolved_reads_as_unresolved(self):
+        thread = {"comments": {"nodes": [{"author": {"login": "reviewer"}}]}}
+        assert self._feedback(thread) is True
+
+    def test_no_threads_is_not_feedback(self):
+        assert self._feedback() is False
+
+    def test_missing_threads_block_is_not_feedback(self):
+        # With no evidence any thread exists, flagging would fabricate the
+        # reason on every PR (unlike the per-thread unknowns above, which
+        # start from a positively-present unresolved thread).
+        pr = PullRequest.from_graphql(_node(reviewThreads=None), "me")
+        assert pr.unresolved_feedback is False
+        assert pr.review_threads_truncated is False
+
+    def test_full_threads_page_sets_truncated(self):
+        threads = [self._thread("me")] * gh._REVIEW_PAGE_LIMIT
+        node = _node(reviewThreads={"nodes": threads})
+        pr = PullRequest.from_graphql(node, "me")
+        assert pr.review_threads_truncated is True
+        assert pr.unresolved_feedback is False
+
+    def test_below_cap_is_not_truncated(self):
+        node = _node(reviewThreads={"nodes": [self._thread("me")]})
+        assert PullRequest.from_graphql(node, "me").review_threads_truncated is False
+
 
 def _completed(
     stdout: str, returncode: int = 0, stderr: str = ""
@@ -900,6 +1025,29 @@ class TestSearch:
         assert viewer == "me"
         assert len(nodes) == 1
         assert count == 1
+
+    def test_only_the_author_search_fetches_review_threads(self, monkeypatch):
+        # Hydrating each thread's last comment is the one measurably expensive
+        # fragment field, and only author-search nodes feed 'unresolved'.
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            gh,
+            "_run_gh",
+            lambda *a: (calls.append(a), _completed(_search_payload([])))[1],
+        )
+        for qualifier in gh.ALL_QUALIFIERS:
+            gh._search(qualifier)
+        by_qualifier = dict(zip(gh.ALL_QUALIFIERS, calls, strict=True))
+        for qualifier, args in by_qualifier.items():
+            expected = "true" if qualifier == "author" else "false"
+            assert f"withThreads={expected}" in args, qualifier
+
+    def test_author_leads_the_qualifier_order(self):
+        # fetch_prs' first-seen-wins dedup must source an authored PR's
+        # fields from the author search — the only one carrying the
+        # reviewThreads block. (The attention view's own qualifier list is
+        # pinned in test_cli.)
+        assert gh.ALL_QUALIFIERS[0] == "author"
 
     def test_nonzero_exit_raises_with_context(self, monkeypatch):
         monkeypatch.setattr(
@@ -1197,6 +1345,70 @@ class TestFetchPrs:
         warnings: list[str] = []
         fetch_prs(["author"], on_warning=warnings.append)
         assert warnings and "250" in warnings[0]
+
+    def _full_threads_node(self, **overrides) -> dict:
+        # An authored PR whose reviewThreads page came back full, with every
+        # visible thread answered by me — hidden threads could still carry
+        # unanswered feedback.
+        threads = [
+            {
+                "isResolved": False,
+                "comments": {"nodes": [{"author": {"login": "me"}}]},
+            }
+            for _ in range(gh._REVIEW_PAGE_LIMIT)
+        ]
+        return _node(reviewThreads={"nodes": threads}, **overrides)
+
+    def test_full_threads_page_without_flag_triggers_warning(self, monkeypatch):
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search({"author": ("me", [self._full_threads_node()], 1)}),
+        )
+        warnings: list[str] = []
+        fetch_prs(["author"], on_warning=warnings.append)
+        assert warnings and "review threads" in warnings[0]
+        assert "acme/widgets#42" in warnings[0]
+
+    def test_full_threads_page_with_flag_does_not_warn(self, monkeypatch):
+        # A visible thread already flagged the PR — it is surfaced either way.
+        node = self._full_threads_node()
+        node["reviewThreads"]["nodes"][0]["comments"]["nodes"][0]["author"] = {
+            "login": "reviewer"
+        }
+        monkeypatch.setattr(
+            gh, "_search", self._fake_search({"author": ("me", [node], 1)})
+        )
+        warnings: list[str] = []
+        prs = fetch_prs(["author"], on_warning=warnings.append)
+        assert "unresolved" in prs[0].attention_reasons
+        assert warnings == []
+
+    def test_full_threads_page_on_draft_does_not_warn(self, monkeypatch):
+        # Drafts never flag 'unresolved', so nothing can be missed.
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {"author": ("me", [self._full_threads_node(isDraft=True)], 1)}
+            ),
+        )
+        warnings: list[str] = []
+        fetch_prs(["author"], on_warning=warnings.append)
+        assert warnings == []
+
+    def test_full_threads_page_on_someone_elses_pr_does_not_warn(self, monkeypatch):
+        # 'unresolved' only ever fires on authored PRs.
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {"review-requested": ("me", [self._full_threads_node()], 1)}
+            ),
+        )
+        warnings: list[str] = []
+        fetch_prs(["review-requested"], on_warning=warnings.append)
+        assert warnings == []
 
     def test_malformed_node_raises_gherror(self, monkeypatch):
         bad = _node()
