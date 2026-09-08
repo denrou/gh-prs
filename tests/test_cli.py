@@ -681,3 +681,211 @@ class TestSnoozeActions:
         assert cli.main(["snooze", _SNOOZE_URL]) == 1
         assert "Error:" in capsys.readouterr().err
         assert path.read_text() == "{not json"
+
+
+_MERGE_URL = "https://github.com/acme/widgets/pull/7"
+_MERGE_URL_2 = "https://github.com/acme/widgets/pull/8"
+
+
+def _mergeable_pr(number: int, url: str, **overrides) -> PullRequest:
+    """A PR that passes the merge preflight; someone else's unless overridden."""
+    return _pr(
+        number,
+        **(
+            dict(
+                url=url,
+                state="OPEN",
+                review_decision="APPROVED",
+                mergeable="MERGEABLE",
+                checks_state="SUCCESS",
+                head_ref_oid=f"head{number}",
+            )
+            | overrides
+        ),
+    )
+
+
+class TestMergeCommand:
+    @pytest.fixture
+    def backend(self, monkeypatch):
+        """Stub the gh layer: PRs served by URL, actions recorded in order."""
+        state: dict = {"prs": {}, "actions": [], "fail": {}}
+
+        def fake_fetch_pr(url):
+            try:
+                return state["prs"][url]
+            except KeyError:
+                raise GhError(f"Lookup of {url}: no such pull request") from None
+
+        def fake_approve(url):
+            if url in state["fail"].get("approve", ()):
+                raise GhError(f"Approving {url} failed: nope")
+            state["actions"].append(("approve", url))
+
+        def fake_merge(url, head_oid, *, admin=False, auto=False):
+            if url in state["fail"].get("merge", ()):
+                raise GhError(f"Merging {url} failed: head commit mismatch")
+            state["actions"].append(("merge", url, head_oid, admin, auto))
+
+        def no_resolve(ref, repo=None):
+            raise AssertionError("a URL must not be resolved through gh")
+
+        monkeypatch.setattr(cli, "fetch_pr", fake_fetch_pr)
+        monkeypatch.setattr(cli, "approve_pr", fake_approve)
+        monkeypatch.setattr(cli, "merge_pr", fake_merge)
+        monkeypatch.setattr(cli, "resolve_pr", no_resolve)
+        return state
+
+    def test_approves_then_merges_someone_elses_pr(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL)
+        assert cli.main(["merge", _MERGE_URL, "--no-color"]) == 0
+        assert backend["actions"] == [
+            ("approve", _MERGE_URL),
+            ("merge", _MERGE_URL, "head7", False, False),
+        ]
+        out = capsys.readouterr().out
+        assert "acme/widgets#7: approved" in out
+        assert "acme/widgets#7: merged" in out
+
+    def test_own_pr_is_merged_without_approving(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        assert cli.main(["merge", _MERGE_URL, "--no-color"]) == 0
+        assert backend["actions"] == [("merge", _MERGE_URL, "head7", False, False)]
+        assert "approved" not in capsys.readouterr().out
+
+    def test_standing_approval_is_not_repeated(self, backend):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(
+            7, _MERGE_URL, my_review_state="APPROVED"
+        )
+        assert cli.main(["merge", _MERGE_URL]) == 0
+        assert [a[0] for a in backend["actions"]] == ["merge"]
+
+    def test_url_is_canonicalized_offline(self, backend):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        assert cli.main(["merge", f"{_MERGE_URL}/files?diff=split"]) == 0
+        assert backend["actions"] == [("merge", _MERGE_URL, "head7", False, False)]
+
+    def test_bare_number_resolves_via_gh(self, backend, monkeypatch):
+        calls: list[tuple] = []
+
+        def fake_resolve(ref, repo):
+            calls.append((ref, repo))
+            return _MERGE_URL, "head7"
+
+        monkeypatch.setattr(cli, "resolve_pr", fake_resolve)
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        assert cli.main(["merge", "7", "-R", "acme/widgets"]) == 0
+        assert calls == [("7", "acme/widgets")]
+        assert [a[0] for a in backend["actions"]] == ["merge"]
+
+    def test_batch_merges_in_order(self, backend):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        backend["prs"][_MERGE_URL_2] = _mergeable_pr(8, _MERGE_URL_2, roles={"author"})
+        assert cli.main(["merge", _MERGE_URL, _MERGE_URL_2]) == 0
+        assert [a[1] for a in backend["actions"]] == [_MERGE_URL, _MERGE_URL_2]
+
+    def test_duplicate_refs_merge_once(self, backend):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        assert cli.main(["merge", _MERGE_URL, f"{_MERGE_URL}/files"]) == 0
+        assert len(backend["actions"]) == 1
+
+    # --- preflight: a single blocked ref aborts the batch before any write ---
+
+    def test_blocked_pr_aborts_the_whole_batch(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        backend["prs"][_MERGE_URL_2] = _mergeable_pr(8, _MERGE_URL_2, is_draft=True)
+        assert cli.main(["merge", _MERGE_URL, _MERGE_URL_2, "--no-color"]) == 1
+        assert backend["actions"] == []
+        err = capsys.readouterr().err
+        assert "acme/widgets#8: is a draft" in err
+        assert "Nothing was merged" in err
+
+    def test_all_blockers_are_reported_at_once(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(
+            7, _MERGE_URL, mergeable="CONFLICTING"
+        )
+        backend["prs"][_MERGE_URL_2] = _mergeable_pr(8, _MERGE_URL_2, stacked=True)
+        assert cli.main(["merge", _MERGE_URL, _MERGE_URL_2, "--no-color"]) == 1
+        err = capsys.readouterr().err
+        assert "#7: has merge conflicts" in err
+        assert "#8: is stacked" in err
+
+    def test_unknown_pr_aborts_the_batch(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        assert cli.main(["merge", _MERGE_URL, _MERGE_URL_2, "--no-color"]) == 1
+        assert backend["actions"] == []
+        assert "no such pull request" in capsys.readouterr().err
+
+    def test_non_pr_url_aborts_the_batch(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        assert cli.main(["merge", _MERGE_URL, "https://github.com/acme/widgets"]) == 1
+        assert backend["actions"] == []
+        assert "not a pull request URL" in capsys.readouterr().err
+
+    def test_bare_merge_needs_a_ref(self, backend, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["merge"])
+        assert exc.value.code == 2
+        assert backend["actions"] == []
+
+    # --- acting: the first failure stops the batch ---
+
+    def test_merge_failure_stops_the_batch(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        backend["prs"][_MERGE_URL_2] = _mergeable_pr(8, _MERGE_URL_2, roles={"author"})
+        backend["fail"]["merge"] = {_MERGE_URL}
+        assert cli.main(["merge", _MERGE_URL, _MERGE_URL_2, "--no-color"]) == 1
+        assert backend["actions"] == []
+        err = " ".join(capsys.readouterr().err.split())  # rich wraps long lines
+        assert "head commit mismatch" in err
+        assert "not attempted: acme/widgets#8" in err
+
+    def test_approval_failure_skips_the_merge(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL)
+        backend["fail"]["approve"] = {_MERGE_URL}
+        assert cli.main(["merge", _MERGE_URL, "--no-color"]) == 1
+        assert backend["actions"] == []
+        assert "Approving" in capsys.readouterr().err
+
+    def test_second_failure_after_first_success(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        backend["prs"][_MERGE_URL_2] = _mergeable_pr(8, _MERGE_URL_2, roles={"author"})
+        backend["fail"]["merge"] = {_MERGE_URL_2}
+        assert cli.main(["merge", _MERGE_URL, _MERGE_URL_2, "--no-color"]) == 1
+        assert [a[1] for a in backend["actions"]] == [_MERGE_URL]
+        captured = capsys.readouterr()
+        assert "acme/widgets#7: merged" in captured.out
+        assert "not attempted" not in captured.err  # nothing was left over
+
+    # --- flags ---
+
+    def test_admin_passes_through_and_relaxes_preflight(self, backend):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(
+            7, _MERGE_URL, roles={"author"}, checks_state="FAILURE"
+        )
+        assert cli.main(["merge", _MERGE_URL, "--admin"]) == 0
+        assert backend["actions"] == [("merge", _MERGE_URL, "head7", True, False)]
+
+    def test_auto_passes_through_and_reports_it(self, backend, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(
+            7, _MERGE_URL, roles={"author"}, checks_state="PENDING"
+        )
+        assert cli.main(["merge", _MERGE_URL, "--auto", "--no-color"]) == 0
+        assert backend["actions"] == [("merge", _MERGE_URL, "head7", False, True)]
+        assert "auto-merge enabled" in capsys.readouterr().out
+
+    def test_admin_and_auto_are_exclusive(self, backend):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["merge", _MERGE_URL, "--admin", "--auto"])
+        assert exc.value.code == 2
+        assert backend["actions"] == []
+
+    @pytest.mark.parametrize(
+        "flags",
+        [["-c"], ["-r"], ["-a"], ["--count"], ["--json"], ["--stale-after", "5d"]],
+    )
+    def test_view_flags_rejected(self, backend, flags, capsys):
+        backend["prs"][_MERGE_URL] = _mergeable_pr(7, _MERGE_URL, roles={"author"})
+        assert cli.main([*flags, "merge", _MERGE_URL]) == 2
+        assert "do not apply" in capsys.readouterr().err
+        assert backend["actions"] == []
