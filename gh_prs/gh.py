@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 
 class GhError(RuntimeError):
@@ -72,6 +73,7 @@ fragment prFields on PullRequest {
   number
   title
   url
+  state
   updatedAt
   createdAt
   isDraft
@@ -113,6 +115,19 @@ query($q: String!, $limit: Int!, $withThreads: Boolean!) {
     + _PR_FRAGMENT
 )
 
+# One PR looked up by URL (the `merge` preflight). `resource` resolves any
+# GitHub URL, so the typename is fetched to tell a PR from an issue; the
+# viewer's login is needed to classify authorship exactly as in a search.
+_PR_QUERY = (
+    """
+query($url: URI!, $withThreads: Boolean!) {
+  viewer { login }
+  resource(url: $url) { __typename ... on PullRequest { ...prFields } }
+}
+"""
+    + _PR_FRAGMENT
+)
+
 
 @dataclass(slots=True)
 class PullRequest:
@@ -124,6 +139,10 @@ class PullRequest:
     updated_at: str
     created_at: str
     is_draft: bool
+    # "OPEN" | "CLOSED" | "MERGED", or "" when the response carried none.
+    # Searches only ever return open PRs; the merge preflight requires a
+    # positive OPEN (a PR of unknown state must not be merged).
+    state: str = ""
     review_decision: str = ""
     mergeable: str = ""
     # "SUCCESS" | "FAILURE" | "PENDING" | "" (no checks configured)
@@ -278,6 +297,7 @@ class PullRequest:
             title=_CONTROL_CHARS.sub("", node["title"]),
             author=(node.get("author") or {}).get("login", ""),
             url=node.get("url", ""),
+            state=node.get("state") or "",
             updated_at=node.get("updatedAt", ""),
             created_at=node.get("createdAt", ""),
             is_draft=node.get("isDraft", False),
@@ -459,6 +479,95 @@ def resolve_pr(ref: str, repo: str | None = None) -> tuple[str, str]:
     if not isinstance(oid, str) or not oid:
         raise GhError(f"Lookup of PR {ref}{where}: response has no headRefOid")
     return url, oid
+
+
+def _host_args(url: str) -> list[str]:
+    """``gh api`` flags routing a request to the host a PR URL lives on.
+
+    gh talks to github.com by default; a URL on an Enterprise host needs
+    ``--hostname`` (and an existing ``gh auth`` session there).
+    """
+    host = urlparse(url).hostname or ""
+    return ["--hostname", host] if host and host != "github.com" else []
+
+
+def fetch_pr(url: str) -> PullRequest:
+    """Fetch one PR by canonical URL, enriched exactly like a search node.
+
+    The ``author`` role is set when the viewer wrote the PR; other roles and
+    ``attention_reasons`` are left empty (this is the merge preflight, not a
+    view). Raises ``GhError`` on any failure, including a URL that resolves
+    to nothing or to something other than a pull request — the preflight
+    must never proceed on a PR it could not inspect.
+    """
+    context = f"Lookup of {url}"
+    data = _graphql(
+        context,
+        *_host_args(url),
+        "-f",
+        f"query={_PR_QUERY}",
+        "-f",
+        f"url={url}",
+        "-F",
+        "withThreads=true",
+    )
+    viewer = (data.get("viewer") or {}).get("login", "")
+    if not viewer:
+        raise GhError(f"{context}: could not determine the authenticated user")
+    node = data.get("resource")
+    if not isinstance(node, dict):
+        raise GhError(f"{context}: no such pull request (or no access to it)")
+    if node.get("__typename") != "PullRequest":
+        raise GhError(f"{context}: not a pull request")
+    try:
+        pr = PullRequest.from_graphql(node, viewer)
+    except (KeyError, TypeError, AttributeError) as e:
+        raise GhError(f"{context}: failed to parse PR data: {e!r}") from e
+    if pr.author == viewer:
+        pr.roles.add("author")
+    return pr
+
+
+def _run_gh_action(context: str, *args: str) -> None:
+    """Run a state-changing gh command; raise ``GhError`` with gh's message on failure."""
+    result = _run_gh(*args)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "gh exited non-zero"
+        raise GhError(f"{context} failed: {detail}")
+
+
+def approve_pr(url: str) -> None:
+    """Submit an approving review on one PR (``gh pr review --approve``)."""
+    _run_gh_action(f"Approving {url}", "pr", "review", "--approve", url)
+
+
+def merge_pr(
+    url: str, head_oid: str, *, admin: bool = False, auto: bool = False
+) -> None:
+    """Squash-merge one PR and delete its branch (``gh pr merge``).
+
+    ``head_oid`` is the commit the preflight inspected: it is passed as
+    ``--match-head-commit`` so GitHub refuses the merge if the branch moved
+    in between — the merge must land exactly the state that was checked. An
+    empty oid is a programming error here (the preflight blocks it first).
+    ``admin`` bypasses branch protection; ``auto`` enables auto-merge instead
+    of merging now. gh rejects the two together, and so does the CLI parser.
+    """
+    if not head_oid:
+        raise GhError(f"Merging {url}: head commit unknown, refusing to merge blindly")
+    args = [
+        "pr",
+        "merge",
+        "--squash",
+        "--delete-branch",
+        "--match-head-commit",
+        head_oid,
+    ]
+    if admin:
+        args.append("--admin")
+    if auto:
+        args.append("--auto")
+    _run_gh_action(f"Merging {url}", *args, url)
 
 
 def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:

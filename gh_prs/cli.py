@@ -1,4 +1,4 @@
-"""Command-line interface for listing GitHub pull requests that need action."""
+"""Command-line interface for listing (and merging) GitHub pull requests that need action."""
 
 import argparse
 import re
@@ -17,11 +17,15 @@ from gh_prs.gh import (
     DEFAULT_STALE_AFTER,
     GhError,
     PullRequest,
+    approve_pr,
     count_prs,
+    fetch_pr,
     fetch_pr_head,
     fetch_prs,
+    merge_pr,
     resolve_pr,
 )
+from gh_prs.merge import merge_blockers, should_approve
 from gh_prs.snooze import (
     SnoozeEntry,
     SnoozeError,
@@ -409,6 +413,71 @@ def _run_snooze_command(
         return 130
 
 
+def _run_merge_command(args: argparse.Namespace, console: Console, err: Console) -> int:
+    """Handle the merge subcommand; returns the exit code.
+
+    Two phases, because a merge is irreversible. First every ref is resolved
+    and preflighted (``merge_blockers``); a single blocked or unresolvable
+    ref aborts the whole batch before anything is written, so a typo in the
+    last ref never leaves the first ones merged. Then the PRs are acted on in
+    order — approve when ``should_approve`` says so, then squash-merge — and
+    the first failure stops the batch (unlike snoozing, where skipping a bad
+    ref is harmless); the PRs not attempted are named so the user can rerun
+    with just those.
+    """
+    try:
+        planned: list[PullRequest] = []
+        blocked: list[str] = []
+        seen: set[str] = set()
+        for ref in args.refs:
+            try:
+                with err.status(f"Checking {escape(ref)}…", spinner="dots"):
+                    url = _ref_to_url(ref, args.repo)
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    pr = fetch_pr(url)
+            except (SnoozeError, GhError) as exc:
+                blocked.append(f"{ref}: {exc}")
+                continue
+            blockers = merge_blockers(pr, admin=args.admin, auto=args.auto)
+            if blockers:
+                blocked.append(f"{pr.id}: {', '.join(blockers)}")
+            else:
+                planned.append(pr)
+        if blocked:
+            for problem in blocked:
+                err.print(f"[red]Error:[/red] {escape(problem)}")
+            err.print("[dim]Nothing was merged.[/dim]")
+            return 1
+
+        done = "auto-merge enabled" if args.auto else "merged"
+        for index, pr in enumerate(planned):
+            try:
+                if should_approve(pr):
+                    with err.status(f"Approving {pr.id}…", spinner="dots"):
+                        approve_pr(pr.url)
+                    console.print(f"{escape(pr.id)}: approved")
+                with err.status(f"Merging {pr.id}…", spinner="dots"):
+                    merge_pr(pr.url, pr.head_ref_oid, admin=args.admin, auto=args.auto)
+                console.print(
+                    f"{escape(pr.id)}: {done} [dim](squash, branch deleted)[/dim]"
+                )
+            except GhError as exc:
+                err.print(f"[red]Error:[/red] {escape(str(exc))}")
+                remaining = [p.id for p in planned[index + 1 :]]
+                if remaining:
+                    err.print(
+                        "[dim]Stopped; not attempted: "
+                        f"{escape(', '.join(remaining))}[/dim]"
+                    )
+                return 1
+        return 0
+    except KeyboardInterrupt:
+        err.print("[dim]Interrupted.[/dim]")
+        return 130
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:]) if argv is None else list(argv)
     for token in argv:
@@ -491,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         default=argparse.SUPPRESS,
         help="disable colored output",
     )
-    commands = parser.add_subparsers(dest="command", metavar="{snooze,unsnooze}")
+    commands = parser.add_subparsers(dest="command", metavar="{snooze,unsnooze,merge}")
     snooze_cmd = commands.add_parser(
         "snooze",
         parents=[common],
@@ -527,6 +596,37 @@ def main(argv: list[str] | None = None) -> int:
         help="a PR number (scoped by -R, or the current directory's repository) "
         "or a full URL",
     )
+    merge_cmd = commands.add_parser(
+        "merge",
+        parents=[common],
+        help="approve (when you can) and squash-merge one or more PRs",
+        description="Squash-merge one or more PRs and delete their branches, "
+        "approving each one first unless you authored it or already approved "
+        "it. Every PR is checked before anything is merged — open, not a "
+        "draft, no conflicts, not stacked on another open PR, checks green, "
+        "review not in the way — and one blocked PR aborts the whole batch. "
+        "A merge that fails stops the batch at that PR.",
+    )
+    merge_cmd.add_argument(
+        "refs",
+        nargs="+",
+        metavar="PR",
+        help="a PR number (scoped by -R, or the current directory's repository) "
+        "or a full URL",
+    )
+    merge_mode = merge_cmd.add_mutually_exclusive_group()
+    merge_mode.add_argument(
+        "--admin",
+        action="store_true",
+        help="use administrator privileges to merge a PR that does not meet "
+        "branch requirements (checks and review decision are not preflighted)",
+    )
+    merge_mode.add_argument(
+        "--auto",
+        action="store_true",
+        help="enable auto-merge instead of merging now; GitHub merges once "
+        "checks pass and reviews are in (neither is preflighted)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -550,6 +650,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "snooze" and args.snooze_for is not None and not args.refs:
             err.print("[red]Error:[/red] --for requires at least one PR to snooze")
             return 2
+        if args.command == "merge":
+            return _run_merge_command(args, console, err)
         return _run_snooze_command(args, console, err)
 
     qualifiers, list_title, list_style = _VIEWS[args.view]

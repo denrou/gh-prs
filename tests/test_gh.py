@@ -657,6 +657,7 @@ class TestPrFragment:
             "statusCheckRollup",
             "baseRef",
             "associatedPullRequests",
+            "state",
         ):
             assert field in gh._PR_FRAGMENT, field
 
@@ -672,6 +673,11 @@ class TestFromGraphql:
         assert pr.mergeable == "MERGEABLE"
         assert pr.id == "acme/widgets#42"
         assert pr.updated_date == "2026-07-15"
+
+    def test_state_is_parsed_and_unknown_when_absent(self):
+        assert PullRequest.from_graphql(_node(state="OPEN"), "me").state == "OPEN"
+        assert PullRequest.from_graphql(_node(state=None), "me").state == ""
+        assert PullRequest.from_graphql(_node(), "me").state == ""
 
     def test_no_rollup_means_no_checks(self):
         pr = PullRequest.from_graphql(_node(), "me")
@@ -1418,3 +1424,160 @@ class TestFetchPrs:
         )
         with pytest.raises(GhError, match="Failed to parse PR data"):
             fetch_prs(["author"])
+
+
+def _pr_payload(
+    node: dict | None, viewer: str = "me", typename: str = "PullRequest"
+) -> str:
+    resource = None if node is None else {"__typename": typename, **node}
+    return json.dumps({"data": {"viewer": {"login": viewer}, "resource": resource}})
+
+
+class TestFetchPr:
+    """fetch_pr: the merge preflight's single-PR lookup (mocked _run_gh)."""
+
+    URL = "https://github.com/acme/widgets/pull/42"
+
+    def test_enriches_like_a_search_node(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed(_pr_payload(_node(state="OPEN")))
+        )
+        pr = gh.fetch_pr(self.URL)
+        assert pr.id == "acme/widgets#42"
+        assert pr.state == "OPEN"
+        assert pr.mergeable == "MERGEABLE"
+        assert pr.roles == set()  # octocat's PR, viewer is "me"
+        assert pr.attention_reasons == set()
+
+    def test_viewer_authored_gets_the_author_role(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed(_pr_payload(_node(), viewer="octocat"))
+        )
+        assert gh.fetch_pr(self.URL).roles == {"author"}
+
+    def test_passes_url_as_a_variable_with_threads(self, monkeypatch):
+        seen: list[tuple] = []
+
+        def fake_run(*args):
+            seen.append(args)
+            return _completed(_pr_payload(_node()))
+
+        monkeypatch.setattr(gh, "_run_gh", fake_run)
+        gh.fetch_pr(self.URL)
+        (args,) = seen
+        assert args[:2] == ("api", "graphql")
+        assert f"url={self.URL}" in args
+        assert "withThreads=true" in args
+        assert "--hostname" not in args
+
+    def test_enterprise_host_is_routed(self, monkeypatch):
+        seen: list[tuple] = []
+
+        def fake_run(*args):
+            seen.append(args)
+            return _completed(_pr_payload(_node()))
+
+        monkeypatch.setattr(gh, "_run_gh", fake_run)
+        gh.fetch_pr("https://ghe.example.com/acme/widgets/pull/42")
+        (args,) = seen
+        assert args[args.index("--hostname") + 1] == "ghe.example.com"
+
+    def test_missing_pr_is_an_error(self, monkeypatch):
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(_pr_payload(None)))
+        with pytest.raises(GhError, match="no such pull request"):
+            gh.fetch_pr(self.URL)
+
+    def test_non_pr_resource_is_an_error(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed(_pr_payload({}, typename="Issue"))
+        )
+        with pytest.raises(GhError, match="not a pull request"):
+            gh.fetch_pr(self.URL)
+
+    def test_missing_viewer_is_an_error(self, monkeypatch):
+        # Without the login, authorship can't be classified and a self-approval
+        # attempt (or a merge of someone else's PR as if it were ours) could follow.
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed(_pr_payload(_node(), viewer=""))
+        )
+        with pytest.raises(GhError, match="authenticated user"):
+            gh.fetch_pr(self.URL)
+
+    def test_malformed_node_is_an_error(self, monkeypatch):
+        node = _node()
+        del node["repository"]
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(_pr_payload(node)))
+        with pytest.raises(GhError, match="failed to parse"):
+            gh.fetch_pr(self.URL)
+
+    def test_gh_failure_is_an_error(self, monkeypatch):
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: _completed("", returncode=1, stderr="401")
+        )
+        with pytest.raises(GhError, match="401"):
+            gh.fetch_pr(self.URL)
+
+
+class TestMergeActions:
+    """approve_pr / merge_pr: command assembly and failure surfacing (mocked _run_gh)."""
+
+    URL = "https://github.com/acme/widgets/pull/42"
+
+    @pytest.fixture
+    def recorder(self, monkeypatch):
+        seen: list[tuple] = []
+
+        def fake_run(*args):
+            seen.append(args)
+            return _completed("")
+
+        monkeypatch.setattr(gh, "_run_gh", fake_run)
+        return seen
+
+    def test_approve_command(self, recorder):
+        gh.approve_pr(self.URL)
+        assert recorder == [("pr", "review", "--approve", self.URL)]
+
+    def test_approve_failure_carries_gh_message(self, monkeypatch):
+        monkeypatch.setattr(
+            gh,
+            "_run_gh",
+            lambda *a: _completed(
+                "", returncode=1, stderr="Can not approve your own PR"
+            ),
+        )
+        with pytest.raises(GhError, match="Approving .* Can not approve"):
+            gh.approve_pr(self.URL)
+
+    def test_merge_command_squashes_deletes_and_pins_the_head(self, recorder):
+        gh.merge_pr(self.URL, "cafe")
+        (args,) = recorder
+        assert args[:2] == ("pr", "merge")
+        assert "--squash" in args
+        assert "--delete-branch" in args
+        assert args[args.index("--match-head-commit") + 1] == "cafe"
+        assert args[-1] == self.URL
+        assert "--admin" not in args
+        assert "--auto" not in args
+
+    def test_merge_admin_flag(self, recorder):
+        gh.merge_pr(self.URL, "cafe", admin=True)
+        assert "--admin" in recorder[0]
+
+    def test_merge_auto_flag(self, recorder):
+        gh.merge_pr(self.URL, "cafe", auto=True)
+        assert "--auto" in recorder[0]
+
+    def test_merge_refuses_an_unknown_head_without_calling_gh(self, recorder):
+        with pytest.raises(GhError, match="head commit unknown"):
+            gh.merge_pr(self.URL, "")
+        assert recorder == []
+
+    def test_merge_failure_carries_gh_message(self, monkeypatch):
+        monkeypatch.setattr(
+            gh,
+            "_run_gh",
+            lambda *a: _completed("", returncode=1, stderr="head commit mismatch"),
+        )
+        with pytest.raises(GhError, match="Merging .* head commit mismatch"):
+            gh.merge_pr(self.URL, "cafe")

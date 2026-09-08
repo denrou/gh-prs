@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv run gh-prs               # Run the CLI (default: PRs needing attention)
 uv run gh-prs -c            # PRs you created
 uv run gh-prs -r            # PRs awaiting your review
+uv run gh-prs merge 123     # Approve (if allowed) and squash-merge a PR — writes to GitHub
 uv run pytest               # Run tests
 uv run ruff check .         # Lint
 uv run ruff format .        # Format
@@ -17,12 +18,17 @@ uv add --dev <pkg>          # Add dev dependency
 
 ## Architecture
 
-Four-module design inside `gh_prs/`:
+Five-module design inside `gh_prs/`:
 
 - **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
   existing `gh auth` session. Exposes a `PullRequest` dataclass plus
-  `fetch_prs()`, `count_prs()`, `fetch_pr_head()`, `ALL_QUALIFIERS`,
-  `DEFAULT_STALE_AFTER`, and the `GhError` exception.
+  `fetch_prs()`, `count_prs()`, `fetch_pr_head()`, `fetch_pr()`,
+  `approve_pr()`, `merge_pr()`, `ALL_QUALIFIERS`, `DEFAULT_STALE_AFTER`, and
+  the `GhError` exception. `approve_pr()`/`merge_pr()` are the only functions
+  in the codebase that write to GitHub.
+- **`merge.py`** — Pure merge policy for the `merge` subcommand:
+  `merge_blockers()` (why a PR must not be merged now) and `should_approve()`
+  (approve first?). No `gh` calls, like `snooze.py`.
 - **`snooze.py`** — Local per-PR snooze store (`{PR url: {oid, until}}` JSON
   at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
   no `gh` calls. Raises `SnoozeError`.
@@ -260,6 +266,55 @@ both forms now hard-error. References resolve independently: a bad or
 not-snoozed one is reported to stderr and skipped while the rest are
 applied, the store is written once, and a partial batch exits non-zero —
 never clobbering the file.
+
+### Merging (`merge.py`, `gh.py`, applied in `cli.py`)
+
+`gh prs merge <pr>...` is the tool's only write path to GitHub: per PR it runs
+`gh pr review --approve` (when `should_approve`: the viewer is not the author
+— GitHub rejects self-approval — and has no standing approval) and then
+`gh pr merge --squash --delete-branch --match-head-commit <oid>`, with
+`--admin` or `--auto` passed through (mutually exclusive, enforced by
+argparse). Refs follow the snooze conventions (bare number + `-R`, or URL;
+duplicates collapse to one), resolved to a URL by `_ref_to_url`, then
+inspected with `fetch_pr(url)` — a GraphQL `resource(url:)` lookup that
+reuses `_PR_FRAGMENT` so every field carries the exact semantics of a search
+node (normalized `checks_state`, `stacked`, `my_review_state`, …), plus the
+`state` field the fragment now carries; the `author` role is set from the
+viewer login, no other roles or attention reasons. Enterprise hosts get
+`--hostname` from the URL.
+
+Because a merge is irreversible, the fail-safe direction is at its strictest
+here: **never merge on uncertain data**. `merge_blockers` requires positive
+evidence on every axis and the CLI runs in two phases:
+
+1. **Preflight everything, then decide.** Every ref is resolved and checked;
+   one unresolvable or blocked ref aborts the batch _before any write_ (a
+   typo in the last ref must not leave the first ones merged). All problems
+   are reported at once. Unconditional blockers, whatever the flags: state
+   not `OPEN` (unknown included), draft, `mergeable` anything but a positive
+   `MERGEABLE` (`CONFLICTING` and `UNKNOWN` alike), no `headRefOid`, or
+   **stacked** — the check GitHub itself doesn't make (it reports a stacked
+   PR mergeable) and the reason the preflight exists at all. Without flags,
+   `checks_state` must be `SUCCESS` or `""` and `review_decision` must not
+   block: `CHANGES_REQUESTED` always does; `REVIEW_REQUIRED` does unless the
+   viewer's own imminent approval may satisfy it (`should_approve`). `--auto`
+   hands checks and a pending review requirement to GitHub's auto-merge (it
+   waits for them) but keeps blocking on `CHANGES_REQUESTED` — a human
+   objected. `--admin` mirrors GitHub's administrator bypass: checks and the
+   review decision are not preflighted; the unconditional blockers still are
+   (GitHub refuses drafts and conflicts even to admins, and stacking is about
+   _where_ the merge lands, not permissions).
+2. **Act in order, stop at the first failure.** Unlike snoozing (skip-and-
+   continue is harmless there), an approve or merge failure stops the batch;
+   the PRs not attempted are named so the user can rerun with just those.
+   `--match-head-commit` pins each merge to the oid the preflight inspected,
+   so a push landing in between makes GitHub refuse the merge instead of
+   merging a state nobody looked at. `merge_pr` refuses an empty oid outright
+   (a blocker already covers it; this is the belt to that brace).
+
+The bare `gh prs merge` (no refs) is a usage error today; merging every
+**ready** PR from the attention view is the natural follow-up, but it needs a
+confirmation step before it can ship.
 
 ## Notes
 

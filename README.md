@@ -1,7 +1,8 @@
 # gh-prs
 
-A simple CLI that lists the GitHub pull requests you need to act on, powered by
-the `gh` CLI. No TUI — just readable, colored, grouped output.
+A simple CLI that lists the GitHub pull requests you need to act on — and
+merges the ones that are ready — powered by the `gh` CLI. No TUI — just
+readable, colored, grouped output.
 
 By default it shows only the PRs that need your attention:
 
@@ -111,6 +112,11 @@ gh prs snooze 12 34 --for 3d  # …several at once, for a custom window (12h, 3d
 gh prs unsnooze 123         # remove a PR's snooze
 gh prs snooze               # with no arguments: list snoozed PRs
 
+gh prs merge 123            # approve (if it isn't yours) and squash-merge a PR
+gh prs merge 12 34 -R o/r   # …several, in order, in another repo
+gh prs merge 123 --auto     # …or enable auto-merge and let GitHub finish
+gh prs merge 123 --admin    # …or bypass branch protection (as gh pr merge --admin)
+
 gh prs --stale-after 5d  # flag your PRs (review-waiting or draft) quiet this long
 ```
 
@@ -142,6 +148,39 @@ and exact counts are unaffected.
 
 Snoozes are stored locally in `~/.config/gh-prs/snooze.json` (honors
 `$XDG_CONFIG_HOME`); they never touch the PR on GitHub.
+
+### Merging
+
+`gh prs merge <pr>...` closes the loop the attention view opens: it
+squash-merges each PR and deletes its branch, approving it first when you are
+allowed to (you didn't author it) and haven't already. PRs are referenced the
+same way as for snoozing — a bare number scoped by `-R/--repo` or the current
+directory, or a full URL — and are handled in the order given.
+
+Because a merge can't be undone, every PR is checked _before_ anything is
+merged, and a single problem aborts the whole batch with nothing done: the PR
+must be open, not a draft, free of conflicts (and GitHub must have finished
+computing that — a PR pushed seconds ago is refused, retry shortly), have a
+known head commit, and not be stacked on another open PR (merging would fold
+it into the parent instead of shipping it). Checks must be green or absent,
+and the review decision must not stand in the way: approved, not required, or
+required on a PR your own approval is about to satisfy. Once the batch is
+under way, the first merge that fails stops it, and the PRs left untouched are
+listed so you can rerun with just those. Each merge is pinned to the head
+commit that was checked, so a push landing in between makes GitHub refuse it
+rather than merging something you didn't look at.
+
+Two flags relax the checks the way `gh pr merge` itself does. `--auto` enables
+auto-merge instead of merging now, so running or failing checks and a pending
+review requirement are left to GitHub to wait on; a standing "changes
+requested" review still blocks. `--admin` uses administrator privileges to
+bypass branch protection, so checks and the review decision are not
+preflighted at all. Neither lifts the unconditional checks above, and they
+can't be combined.
+
+This is the one subcommand that writes to GitHub — it runs `gh pr review
+--approve` and `gh pr merge --squash --delete-branch` on your behalf, nothing
+else.
 
 ### Configuration
 
