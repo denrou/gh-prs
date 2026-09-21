@@ -48,7 +48,8 @@ By default it shows only the PRs that need your attention:
   label in place until someone reviews afresh, so without this the PR would
   stay invisible no matter how long it waited. Change the threshold with
   `--stale-after 5d` or the `stale_after` config setting; set it to `null` in
-  the config to turn the nudge off entirely.
+  the config to turn the nudge off entirely, or set `skip_weekends` to count
+  only working days.
 - **Drafts gone quiet — finish or mark ready** — draft PRs you created that
   have sat untouched longer than the same staleness threshold. A fresh draft
   is deliberately parked work-in-progress and stays out of the way (failing
@@ -186,17 +187,26 @@ else.
 
 Settings live in `~/.config/gh-prs/config.json` (honors `$XDG_CONFIG_HOME`),
 separate from the snooze store. It's optional — every setting has a default.
-Today the only key is `stale_after`, the silence threshold for the
-**Waiting on review** and **Drafts gone quiet** nudges:
+Both keys tune the **Waiting on review** and **Drafts gone quiet** nudges:
 
 ```json
-{ "stale_after": "5d" }
+{ "stale_after": "5d", "skip_weekends": true }
 ```
 
-Accepts the same duration syntax as `--for`/`--stale-after` (`12h`, `3d`,
-`1w`), or `null` to disable both nudges. The `--stale-after` flag overrides the
-file for a single run. An unreadable or invalid config only warns and falls
-back to the 3-day default, so a typo never breaks the tool.
+`stale_after` is the silence threshold. It accepts the same duration syntax as
+`--for`/`--stale-after` (`12h`, `3d`, `1w`), or `null` to disable both nudges.
+The `--stale-after` flag overrides the file for a single run.
+
+`skip_weekends` (default `false`) stops the clock on Saturdays and Sundays, in
+your machine's timezone, so a PR pushed on Friday isn't flagged on Monday for a
+weekend nobody spent reviewing. It also makes `1w` five days rather than seven,
+which keeps it a same-weekday anniversary: a Thursday PR is nudged the
+following Thursday, not the Monday after. Snooze windows (`--for`) stay
+calendar time — a snooze hides a PR, and stretching it over the weekend would
+only delay its return.
+
+An unreadable or invalid config only warns and falls back to the 3-day
+calendar default, so a typo never breaks the tool.
 
 For status bars, prefer the `uv tool install` binary (`~/.local/bin/gh-prs`)
 over `uv run` inside the repo — it skips ~250 ms of project resolution per

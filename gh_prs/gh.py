@@ -6,7 +6,7 @@ import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,6 +19,11 @@ class GhError(RuntimeError):
 # review — a nudge to ping the reviewers) or 'stale-draft' (still a draft — a
 # nudge to finish it or mark it ready). Overridable via config / CLI.
 DEFAULT_STALE_AFTER = timedelta(days=3)
+
+# Weekday arithmetic for the skip-weekends staleness clock: a Monday to
+# anchor the week, and the weekday index Saturday falls on.
+_WEEK_EPOCH = date(1970, 1, 5)
+_SATURDAY = 5
 
 
 # C0 control characters, DEL, and C1 controls (U+0080–U+009F). Rich strips
@@ -605,6 +610,7 @@ def fetch_prs(
     qualifiers: list[str] | None = None,
     on_warning: Callable[[str], None] | None = None,
     stale_after: timedelta | None = DEFAULT_STALE_AFTER,
+    skip_weekends: bool = False,
 ) -> list[PullRequest]:
     """Fetch open PRs the current user is involved with, fully enriched.
 
@@ -620,7 +626,8 @@ def fetch_prs(
 
     ``stale_after`` is the silence threshold for the 'stale' nudge on
     authored PRs still awaiting review and the 'stale-draft' nudge on
-    authored drafts; ``None`` disables both reasons.
+    authored drafts; ``None`` disables both reasons. ``skip_weekends``
+    measures that threshold in working time, not calendar time.
 
     ``on_warning`` (if given) receives a message when a search matched more
     PRs than the cap, when a PR matched by ``reviewed-by`` carries no
@@ -697,7 +704,9 @@ def fetch_prs(
 
     now = datetime.now(UTC)
     for pr in seen.values():
-        pr.attention_reasons = _attention_reasons(pr, now=now, stale_after=stale_after)
+        pr.attention_reasons = _attention_reasons(
+            pr, now=now, stale_after=stale_after, skip_weekends=skip_weekends
+        )
         # The reviewed-by search positively asserts I reviewed this PR; an
         # empty my_review_state therefore means the latestReviews 50-node cap
         # hid my review — a contradiction that would otherwise silently
@@ -733,7 +742,48 @@ def fetch_prs(
     return sorted(seen.values(), key=lambda p: p.updated_at, reverse=True)
 
 
-def _is_stale(updated_at: str, now: datetime, stale_after: timedelta) -> bool:
+def _weekend_before(local: datetime) -> timedelta:
+    """Weekend time from a fixed Monday epoch up to ``local`` (naive, local).
+
+    Monotonic in ``local``, so subtracting two of these gives the weekend
+    time between them — a PR open for years costs the same arithmetic as one
+    open for hours, with no day-by-day walk.
+    """
+    weeks, weekday = divmod((local.date() - _WEEK_EPOCH).days, 7)
+    elapsed = timedelta(days=2 * weeks)
+    if weekday >= _SATURDAY:
+        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        elapsed += timedelta(days=weekday - _SATURDAY) + (local - midnight)
+    return elapsed
+
+
+def _working_elapsed(start: datetime, end: datetime) -> timedelta:
+    """Time from ``start`` to ``end`` with Saturdays and Sundays not counted.
+
+    Measured on the machine's local calendar, in wall-clock terms: three
+    working days after Thursday 10:00 is Tuesday 10:00, and five (what a
+    ``w`` means under this policy) land on the following Thursday at the same
+    time — which is how a person reads both. Wall-clock is also what keeps
+    that true across a DST change, where the absolute elapsed time is an hour
+    off what the calendar says.
+    """
+    local_start = start.astimezone().replace(tzinfo=None)
+    local_end = end.astimezone().replace(tzinfo=None)
+    if local_end <= local_start:
+        # A PR updated in the future (clock skew): let the caller's ">="
+        # comparison see the non-positive span rather than a weekend
+        # subtraction applied backwards.
+        return local_end - local_start
+    weekend = _weekend_before(local_end) - _weekend_before(local_start)
+    return (local_end - local_start) - weekend
+
+
+def _is_stale(
+    updated_at: str,
+    now: datetime,
+    stale_after: timedelta,
+    skip_weekends: bool = False,
+) -> bool:
     """True when ``updated_at`` is older than ``stale_after`` relative to ``now``.
 
     The fail direction is deliberately the opposite of everywhere else in this
@@ -742,6 +792,12 @@ def _is_stale(updated_at: str, now: datetime, stale_after: timedelta) -> bool:
     defaulting an unknown age to 'stale' would fabricate a reason on a
     possibly-fresh PR and cry wolf, so uncertainty stays quiet here rather
     than showing. ``now`` must be timezone-aware.
+
+    With ``skip_weekends``, the clock stops on Saturdays and Sundays (see
+    ``_working_elapsed``), so the threshold measures working time: a PR
+    pushed on Friday afternoon is not nudged on Monday morning for a weekend
+    nobody spent reviewing. That can only ever move the nudge later, so it
+    keeps the same quiet direction as the rest of this function.
     """
     try:
         updated = datetime.fromisoformat(updated_at)
@@ -749,7 +805,8 @@ def _is_stale(updated_at: str, now: datetime, stale_after: timedelta) -> bool:
         return False
     if updated.tzinfo is None:
         return False
-    return now - updated >= stale_after
+    elapsed = _working_elapsed(updated, now) if skip_weekends else now - updated
+    return elapsed >= stale_after
 
 
 def _changes_requested_addressed(pr: PullRequest) -> bool:
@@ -804,6 +861,7 @@ def _attention_reasons(
     pr: PullRequest,
     now: datetime | None = None,
     stale_after: timedelta | None = None,
+    skip_weekends: bool = False,
 ) -> set[str]:
     """Compute why an enriched PR needs the current user's attention.
 
@@ -812,7 +870,8 @@ def _attention_reasons(
     the author: 'conflict' and the 'stale-draft' nudge. The 'stale' and
     'stale-draft' nudges only fire when both ``now`` and ``stale_after`` are
     supplied; omitting either disables them (so a bare
-    ``_attention_reasons(pr)`` never returns either).
+    ``_attention_reasons(pr)`` never returns either). ``skip_weekends``
+    measures the threshold in working time (see ``_is_stale``).
     """
     if pr.is_draft:
         # A draft is deliberately parked WIP: review, new-commits, ci-failed
@@ -830,7 +889,7 @@ def _attention_reasons(
         if (
             now is not None
             and stale_after is not None
-            and _is_stale(pr.updated_at, now, stale_after)
+            and _is_stale(pr.updated_at, now, stale_after, skip_weekends)
         ):
             return {"stale-draft"}
         return set()
@@ -926,7 +985,7 @@ def _attention_reasons(
             and now is not None
             and stale_after is not None
             and _awaiting_review(pr)
-            and _is_stale(pr.updated_at, now, stale_after)
+            and _is_stale(pr.updated_at, now, stale_after, skip_weekends)
         ):
             reasons.add("stale")
 

@@ -32,11 +32,11 @@ Five-module design inside `gh_prs/`:
 - **`snooze.py`** — Local per-PR snooze store (`{PR url: {oid, until}}` JSON
   at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
   no `gh` calls. Raises `SnoozeError`.
-- **`config.py`** — Human-authored settings (`{stale_after}` JSON at
-  `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from the
+- **`config.py`** — Human-authored settings (`{stale_after, skip_weekends}`
+  JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from the
   machine-managed snooze store so a hand-edit can't corrupt snooze state.
-  Reuses `snooze.parse_duration`; missing file → defaults; raises
-  `ConfigError`.
+  Reuses `snooze.parse_duration` and owns `week_days()`, the working-week
+  rule; missing file → defaults; raises `ConfigError`.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
 
@@ -153,7 +153,8 @@ A non-draft PR needs attention when any of these hold:
   `ready`/`ci-failed`/`conflict`/`unresolved`), and it has gone untouched (`updatedAt`)
   longer than the staleness threshold — time to ping the reviewers. The
   threshold is `DEFAULT_STALE_AFTER` (3 days), overridable via `config.json`'s
-  `stale_after` or the `--stale-after` flag. Disabled entirely when
+  `stale_after` or the `--stale-after` flag, and measured in working time when
+  `skip_weekends` is set (see Configuration). Disabled entirely when
   `stale_after` is `None` (config `null`) or `now`/`stale_after` aren't passed
   to `_attention_reasons` (so a bare `_attention_reasons(pr)` never returns
   it). The **stale** family is the one place that **inverts** the house
@@ -211,14 +212,41 @@ authored-draft reasons do:
 
 User settings live in `$XDG_CONFIG_HOME/gh-prs/config.json`, separate from the
 machine-managed `snooze.json` (opposite fail-safe needs; a hand-edit must not
-be able to corrupt snooze state). Today the only key is `stale_after` — a
-duration string (`"3d"`, `"1w"`) parsed by `snooze.parse_duration`, or `null`
-to disable the **stale** and **stale-draft** nudges. Only the view path reads
-it, and it degrades
-to defaults with an on-stderr warning on any error (the tool never writes it,
-so there is nothing to clobber). Resolution order for the threshold:
+be able to corrupt snooze state). Two keys, both tuning the **stale** and
+**stale-draft** nudges:
+
+- `stale_after` — a duration string (`"3d"`, `"1w"`) parsed by
+  `snooze.parse_duration`, or `null` to disable both nudges.
+- `skip_weekends` — `true` measures that threshold in working time:
+  `_is_stale` subtracts every Saturday and Sunday from the elapsed time
+  (`_working_elapsed`). Anything but a JSON boolean is an error — `1` in
+  particular, since `bool` subclasses `int` and a bare `isinstance` check
+  would silently accept it.
+
+Both are read together (`_settings`): the threshold means one thing in
+calendar time and another in working time, so reading one without the other
+would misjudge every age. Only the view path reads them, and they degrade
+to defaults with an on-stderr warning on any error (the tool never writes the
+file, so there is nothing to clobber). Resolution order for the threshold:
 `--stale-after` flag → `config.json` → `DEFAULT_STALE_AFTER`. A bad flag value
 is a hard error (explicit user input); a bad config file only warns.
+
+The working-time clock is wall-clock on the machine's local calendar, not
+absolute elapsed time: three working days after Thursday 10:00 is Tuesday
+10:00 even across a DST change, which is how a person reads it. That is also
+why `week_days()` makes a `w` five days under `skip_weekends` — `"1w"` stays a
+same-weekday anniversary instead of stretching to nine calendar days — and why
+`parse_duration` takes `week_days` rather than owning the policy. The
+`--stale-after` flag is parsed with the config's own weekend policy, so the
+flag overrides the threshold, never how a `w` is read. `_weekend_before()`
+does the arithmetic from a fixed Monday epoch, so a PR open for years costs
+the same as one open for hours.
+
+Skipping weekends can only push a nudge _later_, which keeps the **stale**
+family's inverted fail direction intact. Snooze windows deliberately stay
+calendar time: a snooze _hides_ a PR, so a longer window would delay its
+return — the opposite of the store's fail-toward-showing rule — and `--for` is
+explicit per-invocation input, taken literally like every other flag.
 
 ### Snoozing (`snooze.py`, applied in `cli.py`)
 

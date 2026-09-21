@@ -33,11 +33,19 @@ def isolated_config(tmp_path, monkeypatch):
 @pytest.fixture
 def fake_backend(monkeypatch):
     """Stub out fetch_prs; records the qualifiers requested."""
-    calls: dict = {"qualifiers": None, "prs": [], "stale_after": "unset"}
+    calls: dict = {
+        "qualifiers": None,
+        "prs": [],
+        "stale_after": "unset",
+        "skip_weekends": "unset",
+    }
 
-    def fake_fetch(qualifiers=None, on_warning=None, stale_after="unset"):
+    def fake_fetch(
+        qualifiers=None, on_warning=None, stale_after="unset", skip_weekends="unset"
+    ):
         calls["qualifiers"] = qualifiers
         calls["stale_after"] = stale_after
+        calls["skip_weekends"] = skip_weekends
         return calls["prs"]
 
     monkeypatch.setattr(cli, "fetch_prs", fake_fetch)
@@ -119,7 +127,9 @@ class TestCountSemantics:
 
 class TestFailureSurfacing:
     def test_fetch_error_prints_error_and_exits_nonzero(self, monkeypatch, capsys):
-        def boom(qualifiers=None, on_warning=None, stale_after=None):
+        def boom(
+            qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False
+        ):
             raise GhError("token expired")
 
         monkeypatch.setattr(cli, "fetch_prs", boom)
@@ -198,6 +208,43 @@ class TestStaleThreshold:
         self._write_config(isolated_config, '{"stale_after": null}')
         assert cli.main([]) == 0
         assert fake_backend["stale_after"] is None
+
+    def test_weekends_count_by_default(self, fake_backend):
+        assert cli.main([]) == 0
+        assert fake_backend["skip_weekends"] is False
+
+    def test_config_skip_weekends_reaches_the_view(self, fake_backend, isolated_config):
+        self._write_config(isolated_config, '{"skip_weekends": true}')
+        assert cli.main([]) == 0
+        assert fake_backend["skip_weekends"] is True
+        assert fake_backend["stale_after"] == DEFAULT_STALE_AFTER
+
+    def test_config_week_is_five_days_when_weekends_are_skipped(
+        self, fake_backend, isolated_config
+    ):
+        self._write_config(
+            isolated_config, '{"stale_after": "1w", "skip_weekends": true}'
+        )
+        assert cli.main([]) == 0
+        assert fake_backend["stale_after"] == timedelta(days=5)
+
+    def test_flag_week_follows_the_configured_weekend_policy(
+        self, fake_backend, isolated_config
+    ):
+        # The flag overrides the threshold, not how a 'w' is read: both come
+        # out of the same working-week rule.
+        self._write_config(isolated_config, '{"skip_weekends": true}')
+        assert cli.main(["--stale-after", "1w"]) == 0
+        assert fake_backend["stale_after"] == timedelta(days=5)
+        assert fake_backend["skip_weekends"] is True
+
+    def test_corrupt_config_keeps_calendar_time(
+        self, fake_backend, isolated_config, capsys
+    ):
+        self._write_config(isolated_config, '{"skip_weekends": "oui"}')
+        assert cli.main([]) == 0
+        assert fake_backend["skip_weekends"] is False
+        assert "ignoring config" in capsys.readouterr().err
 
     def test_bad_flag_is_a_hard_error(self, fake_backend, capsys):
         assert cli.main(["--stale-after", "soon"]) == 1
@@ -461,7 +508,7 @@ class TestSnoozeActions:
         monkeypatch.setattr(
             cli,
             "fetch_prs",
-            lambda qualifiers=None, on_warning=None, stale_after=None: [],
+            lambda qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False: [],
         )
 
     def test_snooze_normalizes_url_and_records_head_oid(self, monkeypatch, capsys):
@@ -575,7 +622,7 @@ class TestSnoozeActions:
         monkeypatch.setattr(
             cli,
             "fetch_prs",
-            lambda qualifiers=None, on_warning=None, stale_after=None: [
+            lambda qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False: [
                 _pr(
                     1,
                     url=_SNOOZE_URL,
@@ -586,6 +633,27 @@ class TestSnoozeActions:
         )
         assert cli.main(["snooze", _SNOOZE_URL]) == 0
         assert load_snoozes()[_SNOOZE_URL]["reasons"] == ["review"]
+
+    def test_snooze_capture_follows_the_configured_weekend_policy(
+        self, monkeypatch, isolated_config
+    ):
+        # A reason captured under a different clock than later views use
+        # would differ on the next run and defeat the snooze.
+        path = isolated_config / "gh-prs" / "config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"skip_weekends": true}', encoding="utf-8")
+        seen: dict = {}
+
+        def fake_fetch(
+            qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False
+        ):
+            seen["skip_weekends"] = skip_weekends
+            return []
+
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        monkeypatch.setattr(cli, "fetch_prs", fake_fetch)
+        assert cli.main(["snooze", _SNOOZE_URL]) == 0
+        assert seen["skip_weekends"] is True
 
     def test_snooze_absent_pr_records_no_reasons(self, monkeypatch):
         # The autouse stub returns no PRs, so there are no reasons to attach;

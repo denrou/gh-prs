@@ -7,11 +7,17 @@ two want opposite fail-safe handling, so they live in separate files.
 
 The store is a JSON object at ``$XDG_CONFIG_HOME/gh-prs/config.json``
 (``~/.config/gh-prs/config.json`` by default). A missing file means "all
-defaults". Today the only setting is ``stale_after`` — the silence threshold
-for the 'stale' nudge on authored PRs still awaiting review and the
-'stale-draft' nudge on authored drafts:
+defaults". Both settings tune the 'stale' nudge on authored PRs still
+awaiting review and the 'stale-draft' nudge on authored drafts:
 
-    {"stale_after": "3d"}    # a duration; null disables both nudges entirely
+    {"stale_after": "3d",      # the silence threshold; null disables both nudges
+     "skip_weekends": false}   # true: count working time only, not calendar time
+
+``skip_weekends`` stops the clock on Saturdays and Sundays, so a PR pushed on
+Friday is not nudged on Monday for a weekend nobody was working. It also
+makes a ``w`` five days rather than seven (``week_days`` below), which keeps
+``"1w"`` a same-weekday anniversary: a Thursday PR is nudged the following
+Thursday, not the Monday after.
 
 Only the view path reads this file, and it degrades to defaults (with a
 warning) on any error — the tool never writes it, so there is nothing to
@@ -25,7 +31,13 @@ from datetime import timedelta
 from pathlib import Path
 
 from gh_prs.gh import DEFAULT_STALE_AFTER
-from gh_prs.snooze import SnoozeError, parse_duration
+from gh_prs.snooze import CALENDAR_WEEK_DAYS, SnoozeError, parse_duration
+
+
+# Days a 'w' stands for once weekends stop counting. Five, not seven, so the
+# unit keeps naming the same weekday a week later — the way a human reads
+# "give it a week" — instead of silently meaning nine calendar days.
+WORKING_WEEK_DAYS = 5
 
 
 class ConfigError(Exception):
@@ -37,6 +49,19 @@ class Config:
     # Silence threshold for the 'stale' and 'stale-draft' nudges; None
     # disables both entirely.
     stale_after: timedelta | None = DEFAULT_STALE_AFTER
+    # Measure that threshold in working time, skipping Saturdays and Sundays
+    # in the machine's local timezone.
+    skip_weekends: bool = False
+
+
+def week_days(skip_weekends: bool) -> int:
+    """Days a 'w' stands for under the given weekend policy.
+
+    Shared by the config file and the ``--stale-after`` flag so both read a
+    duration the same way; the snooze store keeps calendar weeks (a snooze
+    hides a PR, so stretching its window would only delay resurfacing).
+    """
+    return WORKING_WEEK_DAYS if skip_weekends else CALENDAR_WEEK_DAYS
 
 
 def config_path() -> Path:
@@ -66,11 +91,32 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError(f"{path} is not valid JSON: {e}") from e
     if not isinstance(data, dict):
         raise ConfigError(f"{path} has an unexpected shape (want a JSON object)")
-    return Config(stale_after=_parse_stale_after(data, path))
+    # skip_weekends first: it decides how long a 'w' is in stale_after.
+    skip_weekends = _parse_skip_weekends(data, path)
+    return Config(
+        stale_after=_parse_stale_after(data, path, skip_weekends),
+        skip_weekends=skip_weekends,
+    )
 
 
-def _parse_stale_after(data: dict, path: Path) -> timedelta | None:
-    """Read the ``stale_after`` setting: absent → default, null → disabled."""
+def _parse_skip_weekends(data: dict, path: Path) -> bool:
+    """Read the ``skip_weekends`` setting: absent → False (calendar time)."""
+    if "skip_weekends" not in data:
+        return False
+    value = data["skip_weekends"]
+    # A bare isinstance check would accept 0/1 (bool subclasses int); a
+    # number here means the user meant something this setting cannot express.
+    if not isinstance(value, bool):
+        raise ConfigError(f"{path}: 'skip_weekends' must be true or false")
+    return value
+
+
+def _parse_stale_after(data: dict, path: Path, skip_weekends: bool) -> timedelta | None:
+    """Read the ``stale_after`` setting: absent → default, null → disabled.
+
+    ``skip_weekends`` only sets how long a ``w`` is (see ``week_days``); the
+    default is a plain 3 days either way.
+    """
     if "stale_after" not in data:
         return DEFAULT_STALE_AFTER
     value = data["stale_after"]
@@ -82,6 +128,6 @@ def _parse_stale_after(data: dict, path: Path) -> timedelta | None:
             "(or null to disable the staleness nudges)"
         )
     try:
-        return parse_duration(value)
+        return parse_duration(value, week_days=week_days(skip_weekends))
     except SnoozeError as e:
         raise ConfigError(f"{path}: invalid 'stale_after': {e}") from e
