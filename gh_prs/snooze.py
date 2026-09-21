@@ -53,7 +53,12 @@ class SnoozeEntry(TypedDict):
 _PR_URL = re.compile(r"^(https://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)(?=$|[/?#])")
 
 _DURATION = re.compile(r"^(\d+)\s*([hdw])$")
-_DURATION_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
+# 'w' is handled separately (its length is a caller's choice, see
+# parse_duration); these two units are fixed.
+_DURATION_UNITS = {"h": "hours", "d": "days"}
+
+# Days a 'w' stands for by default: a calendar week.
+CALENDAR_WEEK_DAYS = 7
 
 
 def snooze_path() -> Path:
@@ -61,8 +66,14 @@ def snooze_path() -> Path:
     return Path(config_home) / "gh-prs" / "snooze.json"
 
 
-def parse_duration(text: str) -> timedelta:
+def parse_duration(text: str, *, week_days: int = CALENDAR_WEEK_DAYS) -> timedelta:
     """Parse a snooze duration like ``12h``, ``3d``, or ``1w``.
+
+    ``week_days`` is how many days a ``w`` stands for — seven by default.
+    Callers measuring working time (the staleness threshold with weekends
+    skipped) pass five, so ``1w`` stays a same-weekday anniversary instead of
+    stretching to seven working days. Only the unit's length changes here;
+    which time counts is the caller's business.
 
     Raises ``SnoozeError`` on anything else — malformed input, zero (a snooze
     that never hides anything is a typo, not a request), and durations too
@@ -81,6 +92,8 @@ def parse_duration(text: str) -> timedelta:
         value = int(amount)
         if not value:
             raise SnoozeError(msg)
+        if unit == "w":
+            return timedelta(days=value * week_days)
         return timedelta(**{_DURATION_UNITS[unit]: value})
     except (ValueError, OverflowError) as e:
         raise SnoozeError(msg) from e

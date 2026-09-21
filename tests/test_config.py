@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from gh_prs.config import Config, ConfigError, config_path, load_config
+from gh_prs.config import Config, ConfigError, config_path, load_config, week_days
 from gh_prs.gh import DEFAULT_STALE_AFTER
 
 
@@ -38,6 +38,34 @@ class TestLoadConfig:
         path = tmp_path / "config.json"
         path.write_text('{"stale_after": null}', encoding="utf-8")
         assert load_config(path).stale_after is None
+
+    def test_weekends_count_by_default(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text('{"stale_after": "3d"}', encoding="utf-8")
+        assert load_config(path).skip_weekends is False
+
+    def test_skip_weekends_is_read(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text('{"skip_weekends": true}', encoding="utf-8")
+        assert load_config(path).skip_weekends is True
+
+    def test_skipping_weekends_makes_a_week_five_days(self, tmp_path):
+        # "1w" stays a same-weekday anniversary rather than stretching to
+        # seven working days (nine calendar ones).
+        path = tmp_path / "config.json"
+        path.write_text(
+            '{"stale_after": "1w", "skip_weekends": true}', encoding="utf-8"
+        )
+        assert load_config(path).stale_after == timedelta(days=5)
+
+    @pytest.mark.parametrize("value", ['"yes"', "1", "null", "[]"])
+    def test_non_boolean_skip_weekends_raises(self, tmp_path, value):
+        # 1 in particular: bool subclasses int, so a bare isinstance check
+        # would have accepted it and hidden the user's mistake.
+        path = tmp_path / "config.json"
+        path.write_text(f'{{"skip_weekends": {value}}}', encoding="utf-8")
+        with pytest.raises(ConfigError, match="'skip_weekends' must be true or false"):
+            load_config(path)
 
     def test_invalid_duration_raises(self, tmp_path):
         path = tmp_path / "config.json"
@@ -89,3 +117,13 @@ class TestLoadConfig:
         path.write_bytes(b"\xff\xfe{}")
         with pytest.raises(ConfigError, match="not valid UTF-8"):
             load_config(path)
+
+
+class TestWeekDays:
+    """A 'w' is five days in working time, seven on the calendar."""
+
+    def test_calendar_week(self):
+        assert week_days(False) == 7
+
+    def test_working_week(self):
+        assert week_days(True) == 5

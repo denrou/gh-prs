@@ -1,8 +1,11 @@
 """Tests for gh_prs.gh: attention reasons, GraphQL parsing, and fetch orchestration."""
 
 import json
+import os
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -17,6 +20,36 @@ from gh_prs.gh import (
 
 _NOW = datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC)
 _STALE_AFTER = timedelta(days=3)
+
+# A zone with a DST change, for the working-time clock below.
+_PARIS = ZoneInfo("Europe/Paris")
+
+
+def _paris(*args) -> datetime:
+    """An aware datetime in Europe/Paris, e.g. _paris(2026, 7, 23, 10)."""
+    return datetime(*args, tzinfo=_PARIS)
+
+
+@pytest.fixture
+def paris_local_tz():
+    """Pin the machine's local zone to Europe/Paris.
+
+    The working-time clock reads the local calendar (which instants fall on a
+    Saturday), so these tests must not depend on where they run. Restored by
+    hand rather than via monkeypatch: tzset() has to run again *after* the
+    environment is back, and monkeypatch's own teardown comes later.
+    """
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Paris"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
 
 
 def _pr(**overrides) -> PullRequest:
@@ -634,6 +667,100 @@ class TestIsStale:
     def test_naive_timestamp_is_not_stale(self):
         # A timestamp without a timezone can't be compared safely → no nudge.
         assert _is_stale("2026-07-01T12:00:00", _NOW, _STALE_AFTER) is False
+
+
+@pytest.mark.usefixtures("paris_local_tz")
+class TestIsStaleSkippingWeekends:
+    """The clock stops on Saturdays and Sundays, on the local calendar."""
+
+    def _stale(self, updated: datetime, now: datetime, after: timedelta) -> bool:
+        return _is_stale(updated.isoformat(), now, after, True)
+
+    def test_weekend_does_not_count_toward_the_threshold(self):
+        # Thursday 10:00 → Monday 10:00 is four calendar days but only two
+        # working ones: no nudge for a weekend nobody spent reviewing.
+        updated, now = _paris(2026, 7, 23, 10), _paris(2026, 7, 27, 10)
+        assert self._stale(updated, now, timedelta(days=3)) is False
+        assert _is_stale(updated.isoformat(), now, timedelta(days=3)) is True
+
+    def test_three_working_days_from_thursday_land_on_tuesday(self):
+        updated = _paris(2026, 7, 23, 10)
+        assert self._stale(updated, _paris(2026, 7, 28, 9, 59), _STALE_AFTER) is False
+        assert self._stale(updated, _paris(2026, 7, 28, 10), _STALE_AFTER) is True
+
+    def test_a_working_week_is_the_same_weekday_next_week(self):
+        # Five working days is what 'w' means under this policy (see
+        # config.week_days): a Thursday PR is nudged the following Thursday.
+        updated, week = _paris(2026, 7, 23, 10), timedelta(days=5)
+        assert self._stale(updated, _paris(2026, 7, 30, 9, 59), week) is False
+        assert self._stale(updated, _paris(2026, 7, 30, 10), week) is True
+
+    def test_weekend_activity_starts_counting_on_monday(self):
+        # Pushed Saturday afternoon: the clock only starts Monday 00:00, so
+        # 43 calendar hours later is nine working hours.
+        updated = _paris(2026, 7, 25, 14)
+        assert self._stale(updated, _paris(2026, 7, 27, 9), timedelta(days=1)) is False
+        assert self._stale(updated, _paris(2026, 7, 28, 9), timedelta(days=1)) is True
+
+    def test_several_weekends_are_all_skipped(self):
+        # Three weeks apart: 21 calendar days, 15 working ones.
+        updated, now = _paris(2026, 7, 6, 10), _paris(2026, 7, 27, 10)
+        assert self._stale(updated, now, timedelta(days=15)) is True
+        assert self._stale(updated, now, timedelta(days=16)) is False
+
+    def test_dst_change_over_the_weekend_keeps_the_wall_clock(self):
+        # Europe/Paris falls back on Sunday 2026-10-25, so Thursday 10:00 to
+        # Tuesday 10:00 is three working days on the calendar but 3d1h of
+        # absolute time. The 09:59 case is what pins the wall-clock reading:
+        # measuring absolute elapsed time would nudge an hour early.
+        updated = _paris(2026, 10, 22, 10)
+        assert self._stale(updated, _paris(2026, 10, 27, 9, 59), _STALE_AFTER) is False
+        assert self._stale(updated, _paris(2026, 10, 27, 10), _STALE_AFTER) is True
+
+    def test_timestamp_in_the_future_is_not_stale(self):
+        # Clock skew must not have the weekend subtracted from a negative
+        # span and come out looking old.
+        updated, now = _paris(2026, 7, 27, 10), _paris(2026, 7, 20, 10)
+        assert self._stale(updated, now, _STALE_AFTER) is False
+
+    @pytest.mark.parametrize("bad", ["", "not-a-date", "2026-07-01T12:00:00", None])
+    def test_unusable_timestamp_stays_quiet(self, bad):
+        # Same quiet fail direction as the calendar clock.
+        assert _is_stale(bad, _NOW, _STALE_AFTER, True) is False
+
+
+@pytest.mark.usefixtures("paris_local_tz")
+class TestStaleNudgesSkippingWeekends:
+    """Both nudges take the working-time clock when skip_weekends is set."""
+
+    # Thursday 10:00 Paris to Monday 10:00: four calendar days, two working.
+    _UPDATED = _paris(2026, 7, 23, 10).isoformat()
+    _MONDAY = _paris(2026, 7, 27, 10)
+
+    def _reasons(self, pr, skip_weekends):
+        return _attention_reasons(
+            pr,
+            now=self._MONDAY,
+            stale_after=_STALE_AFTER,
+            skip_weekends=skip_weekends,
+        )
+
+    def _pr_awaiting_review(self) -> PullRequest:
+        return _pr(
+            roles={"author"},
+            review_decision="REVIEW_REQUIRED",
+            updated_at=self._UPDATED,
+        )
+
+    def test_weekend_holds_back_the_stale_nudge(self):
+        pr = self._pr_awaiting_review()
+        assert self._reasons(pr, skip_weekends=True) == set()
+        assert self._reasons(pr, skip_weekends=False) == {"stale"}
+
+    def test_weekend_holds_back_the_stale_draft_nudge(self):
+        pr = _pr(roles={"author"}, is_draft=True, updated_at=self._UPDATED)
+        assert self._reasons(pr, skip_weekends=True) == set()
+        assert self._reasons(pr, skip_weekends=False) == {"stale-draft"}
 
 
 class TestPrFragment:
@@ -1256,6 +1383,26 @@ class TestFetchPrs:
         assert by_number[1].attention_reasons == {"review"}
         # Sorted newest-updated first: PR 2 (07-16) before PR 1 (07-15).
         assert [pr.number for pr in prs] == [2, 1]
+
+    def test_skip_weekends_reaches_the_staleness_clock(self, monkeypatch):
+        # The flag is only useful if it survives the trip from the caller to
+        # _is_stale; the clock itself is tested directly above.
+        seen: list[bool] = []
+
+        def fake_is_stale(updated_at, now, stale_after, skip_weekends=False):
+            seen.append(skip_weekends)
+            return False
+
+        monkeypatch.setattr(gh, "_is_stale", fake_is_stale)
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {"author": ("me", [_node(reviewDecision="REVIEW_REQUIRED")], 1)}
+            ),
+        )
+        fetch_prs(["author"], skip_weekends=True)
+        assert seen == [True]
 
     def test_viewer_propagates_from_any_search(self, monkeypatch):
         node = _node(

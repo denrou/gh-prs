@@ -113,6 +113,24 @@ class TestParseDuration:
         with pytest.raises(SnoozeError):
             parse_duration(bad)
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("1w", timedelta(days=5)),
+            ("2w", timedelta(days=10)),
+            ("3d", timedelta(days=3)),  # only 'w' changes length
+            ("12h", timedelta(hours=12)),
+        ],
+    )
+    def test_week_days_resizes_only_the_week_unit(self, text, expected):
+        assert parse_duration(text, week_days=5) == expected
+
+    def test_a_huge_working_week_is_a_clean_error_not_a_crash(self):
+        # The multiplication is the one arithmetic this parameter adds; an
+        # overflow through it must still surface as SnoozeError.
+        with pytest.raises(SnoozeError):
+            parse_duration("9" * 100 + "w", week_days=5)
+
     def test_overflowing_duration_is_a_clean_error_not_a_crash(self):
         # A syntactically valid but enormous value overflows timedelta; it must
         # surface as SnoozeError, not escape as an uncaught OverflowError.

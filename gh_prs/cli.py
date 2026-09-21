@@ -3,7 +3,7 @@
 import argparse
 import re
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import Any
 
@@ -11,10 +11,9 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from gh_prs.config import ConfigError, load_config
+from gh_prs.config import Config, ConfigError, load_config, week_days
 from gh_prs.gh import (
     ALL_QUALIFIERS,
-    DEFAULT_STALE_AFTER,
     GhError,
     PullRequest,
     approve_pr,
@@ -247,29 +246,28 @@ def _ref_to_url_and_head(ref: str, repo: str | None) -> tuple[str, str]:
     return url, fetch_pr_head(url)
 
 
-def _config_stale_after(err: Console) -> timedelta | None:
-    """The persisted staleness threshold from config.json (or the default on a
-    config error; ``None`` when the user disabled the staleness nudges).
+def _settings(err: Console) -> Config:
+    """The persisted settings from config.json, or all-defaults on any error.
 
-    The view may override this per-invocation with ``--stale-after``; snooze
-    capture deliberately uses only this persisted value, so a captured
-    'stale' or 'stale-draft' reason matches what later (unflagged) views will
-    compute for the PR.
+    Both staleness settings travel together: the threshold means one thing in
+    calendar time and another in working time, so reading one without the
+    other would misjudge every age. The view may override the threshold
+    per-invocation with ``--stale-after``; snooze capture deliberately uses
+    only the persisted values, so a captured 'stale' or 'stale-draft' reason
+    matches what later (unflagged) views will compute for the PR.
     """
     try:
-        return load_config().stale_after
+        return load_config()
     except ConfigError as exc:
         err.print(f"[yellow]Warning:[/yellow] ignoring config: {exc}")
-        return DEFAULT_STALE_AFTER
+        return Config()
 
 
-def _attention_reasons_by_url(
-    err: Console, stale_after: timedelta | None
-) -> dict[str, list[str]]:
+def _attention_reasons_by_url(err: Console, config: Config) -> dict[str, list[str]]:
     """Map each attention-view PR to its current reasons, for snooze capture.
 
-    ``stale_after`` must be the same threshold later views will use (see
-    ``_config_stale_after``) so a captured 'stale' reason doesn't spuriously
+    ``config`` must hold the same staleness settings later views will use
+    (see ``_settings``) so a captured 'stale' reason doesn't spuriously
     differ from the rendered one and defeat the snooze on the next run.
 
     Best-effort: a lookup failure degrades to an empty map (the snooze still
@@ -284,7 +282,12 @@ def _attention_reasons_by_url(
 
     try:
         with err.status("Reading attention state…", spinner="dots"):
-            prs = fetch_prs(qualifiers, on_warning=warn, stale_after=stale_after)
+            prs = fetch_prs(
+                qualifiers,
+                on_warning=warn,
+                stale_after=config.stale_after,
+                skip_weekends=config.skip_weekends,
+            )
     except GhError as exc:
         warn(f"could not read attention state ({exc}); snoozing without it")
         return {}
@@ -320,9 +323,7 @@ def _do_snooze(
     # lapses when they change — e.g. a review lands and a waiting PR becomes
     # ready to merge — not only when its head moves. Only worth a fetch once
     # at least one ref resolved.
-    reasons_by_url = (
-        _attention_reasons_by_url(err, _config_stale_after(err)) if resolved else {}
-    )
+    reasons_by_url = _attention_reasons_by_url(err, _settings(err)) if resolved else {}
     for url, oid in resolved.items():
         snoozes[url] = make_entry(oid, now, duration, reasons_by_url.get(url))
     if resolved:
@@ -533,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         metavar="DURATION",
         help="flag PRs you created that have gone this long without activity "
         "while still awaiting review or still draft "
-        "(e.g. 3d, 1w; default 3d, overrides config.json)",
+        "(e.g. 3d, 1w; default 3d, overrides config.json; counted in working "
+        "days when config.json sets skip_weekends)",
     )
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
@@ -670,13 +672,19 @@ def main(argv: list[str] | None = None) -> int:
     # --stale-after overrides the config file, which falls back to the 3-day
     # default. A bad flag value is a hard error (explicit user input); a bad
     # config file only warns and uses the default (fail-safe: keep working).
-    # The fast-count path never computes attention reasons, so skip it there.
+    # The weekend policy stays the config's either way — it decides what the
+    # flag's own 'w' means, so both are read the same way. The fast-count
+    # path never computes attention reasons, so skip it there.
     stale_after = None
+    skip_weekends = False
     if not fast_count:
-        stale_after = _config_stale_after(err)
+        config = _settings(err)
+        stale_after, skip_weekends = config.stale_after, config.skip_weekends
         if args.stale_after is not None:
             try:
-                stale_after = parse_duration(args.stale_after)
+                stale_after = parse_duration(
+                    args.stale_after, week_days=week_days(skip_weekends)
+                )
             except SnoozeError as exc:
                 err.print(f"[red]Error:[/red] {exc}")
                 return 1
@@ -688,7 +696,12 @@ def main(argv: list[str] | None = None) -> int:
             if fast_count:
                 count = count_prs(qualifiers[0])
             else:
-                prs = fetch_prs(qualifiers, on_warning=warn, stale_after=stale_after)
+                prs = fetch_prs(
+                    qualifiers,
+                    on_warning=warn,
+                    stale_after=stale_after,
+                    skip_weekends=skip_weekends,
+                )
     except GhError as exc:
         err.print(f"[red]Error:[/red] {exc}")
         return 1
