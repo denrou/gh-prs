@@ -99,7 +99,7 @@ gh prs
 
 ```bash
 gh prs              # PRs that need your attention (default)
-gh prs -c/--created # every open PR you created
+gh prs -c/--created # every open PR you created (alias: --me)
 gh prs -r/--review  # every PR awaiting your review
 gh prs -a/--all     # every PR you are involved with
 gh prs --json       # raw JSON (for scripting)

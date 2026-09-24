@@ -501,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         "-c",
         "--created",
+        "--me",
         dest="view",
         action="store_const",
         const="created",

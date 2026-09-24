@@ -65,8 +65,9 @@ class TestQualifierSelection:
             "reviewed-by",
         ]
 
-    def test_created_view_searches_author_only(self, fake_backend):
-        cli.main(["-c"])
+    @pytest.mark.parametrize("flag", ["-c", "--created", "--me"])
+    def test_created_view_searches_author_only(self, fake_backend, flag):
+        cli.main([flag])
         assert fake_backend["qualifiers"] == ["author"]
 
     def test_review_view_searches_review_requested_only(self, fake_backend):
