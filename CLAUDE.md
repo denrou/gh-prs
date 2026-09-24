@@ -16,6 +16,37 @@ uv add <pkg>                # Add dependency
 uv add --dev <pkg>          # Add dev dependency
 ```
 
+## Workflow
+
+This is Denis's personal project (`github.com/denrou/gh-prs`), outside the
+Centreon organisation. The Centreon conventions — feature branch, pull
+request, the `/create-pr` and `/check-pr` skills, Jira references — do not
+apply here, and `/create-pr` must not be used: it forces a pull request the
+project does not want.
+
+- **Commit straight on `main`.** Conventional-commit messages, as the history
+  shows (`feat:`, `fix:`, `chore: release X.Y.Z`). Lint, format and test
+  before committing; run Prettier on any Markdown touched.
+- **Pushing is the user's move.** `git push origin main` is denied by the
+  user's global permission settings, so once the commit is in place hand
+  them the exact line to run in this session:
+
+  ```
+  ! git push origin main
+  ```
+
+  Do not route around the denial by pushing a branch and opening a pull
+  request.
+
+- **Offer a release after every landed change.** Once the push is done, ask
+  whether to cut one. A release is: bump `version` in `pyproject.toml`, run
+  `uv lock`, commit `chore: release X.Y.Z` on `main`, have the user push,
+  then `gh release create vX.Y.Z --target main`. The release event runs
+  `.github/workflows/python-publish.yml` (PyPI trusted publishing), which
+  dispatches the Homebrew tap update in `denrou/homebrew-gh-prs`; that
+  dispatch can race PyPI's index, so verify the formula moved and
+  re-dispatch `update-formula.yml` if it did not.
+
 ## Architecture
 
 Six-module design inside `gh_prs/`:
