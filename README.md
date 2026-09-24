@@ -187,10 +187,15 @@ else.
 
 Settings live in `~/.config/gh-prs/config.json` (honors `$XDG_CONFIG_HOME`),
 separate from the snooze store. It's optional — every setting has a default.
-Both keys tune the **Waiting on review** and **Drafts gone quiet** nudges:
+Two keys tune the **Waiting on review** and **Drafts gone quiet** nudges, and
+a third silences review requests you never intend to answer:
 
 ```json
-{ "stale_after": "5d", "skip_weekends": true }
+{
+  "stale_after": "5d",
+  "skip_weekends": true,
+  "mute": [{ "author": "centreon-renovate", "unless_labels": ["S-Python"] }]
+}
 ```
 
 `stale_after` is the silence threshold. It accepts the same duration syntax as
@@ -205,8 +210,23 @@ following Thursday, not the Monday after. Snooze windows (`--for`) stay
 calendar time — a snooze hides a PR, and stretching it over the weekend would
 only delay its return.
 
-An unreadable or invalid config only warns and falls back to the 3-day
-calendar default, so a typo never breaks the tool.
+`mute` is a list of rules, each naming a PR `author` and, optionally, the
+`unless_labels` that exempt a PR from it. The example reads "hide
+centreon-renovate's PRs unless they carry S-Python" — the shape of a bot
+whose dependency bumps land on your whole team while only one stack is yours.
+Where a snooze silences one PR for a while, a mute rule silences a kind of PR
+for good. Muted PRs drop out of the default view and `--count`; a dim line
+on stderr says how many were withheld, and `gh prs -r` (like `-a` and
+`--json`) still lists them, so nothing disappears without a trace. Logins
+and labels match case-insensitively. Use the author login as GitHub's API
+reports it — a GitHub App is its slug without the `[bot]` suffix; `gh prs -r
+--json` prints the `author` and `labels` the tool sees. Your own PRs are never
+muted, whatever the rules say.
+
+An unreadable or invalid config only warns and falls back to the defaults
+(3-day calendar threshold, no mute rules), so a typo never breaks the tool —
+and a broken `mute` list hides nothing rather than guessing which rules you
+meant.
 
 For status bars, prefer the `uv tool install` binary (`~/.local/bin/gh-prs`)
 over `uv run` inside the repo — it skips ~250 ms of project resolution per

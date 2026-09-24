@@ -6,6 +6,7 @@ import pytest
 
 from gh_prs.config import Config, ConfigError, config_path, load_config, week_days
 from gh_prs.gh import DEFAULT_STALE_AFTER
+from gh_prs.mute import MuteRule
 
 
 class TestConfigPath:
@@ -117,6 +118,102 @@ class TestLoadConfig:
         path.write_bytes(b"\xff\xfe{}")
         with pytest.raises(ConfigError, match="not valid UTF-8"):
             load_config(path)
+
+
+class TestMuteRules:
+    def _load(self, tmp_path, body: str):
+        path = tmp_path / "config.json"
+        path.write_text(f'{{"mute": {body}}}', encoding="utf-8")
+        return load_config(path)
+
+    def test_absent_key_means_no_rules(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("{}", encoding="utf-8")
+        assert load_config(path).mute == ()
+
+    def test_empty_list_means_no_rules(self, tmp_path):
+        assert self._load(tmp_path, "[]").mute == ()
+
+    def test_author_only_rule(self, tmp_path):
+        rules = self._load(tmp_path, '[{"author": "renovate"}]').mute
+        assert rules == (MuteRule(author="renovate"),)
+        assert rules[0].unless_labels == frozenset()
+
+    def test_rule_with_exempting_labels_keeps_file_order(self, tmp_path):
+        body = (
+            '[{"author": "renovate", "unless_labels": ["S-Python", "S-Rust"]},'
+            ' {"author": "dependabot"}]'
+        )
+        assert self._load(tmp_path, body).mute == (
+            MuteRule(
+                author="renovate", unless_labels=frozenset({"S-Python", "S-Rust"})
+            ),
+            MuteRule(author="dependabot"),
+        )
+
+    def test_author_is_stripped(self, tmp_path):
+        assert (
+            self._load(tmp_path, '[{"author": " renovate "}]').mute[0].author
+            == "renovate"
+        )
+
+    def test_rules_coexist_with_the_staleness_settings(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            '{"stale_after": "1w", "skip_weekends": true, "mute": [{"author": "bot"}]}',
+            encoding="utf-8",
+        )
+        config = load_config(path)
+        assert config.stale_after == timedelta(days=5)
+        assert config.mute == (MuteRule(author="bot"),)
+
+    @pytest.mark.parametrize(
+        "body", ['{"author": "renovate"}', '"renovate"', "null", "1"]
+    )
+    def test_non_list_raises(self, tmp_path, body):
+        with pytest.raises(ConfigError, match="'mute' must be a list"):
+            self._load(tmp_path, body)
+
+    @pytest.mark.parametrize("body", ['["renovate"]', "[null]", "[[]]"])
+    def test_non_object_rule_raises(self, tmp_path, body):
+        with pytest.raises(ConfigError, match=r"'mute\[0\]' must be an object"):
+            self._load(tmp_path, body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "[{}]",
+            '[{"author": ""}]',
+            '[{"author": "  "}]',
+            '[{"author": 1}]',
+            '[{"author": null}]',
+        ],
+    )
+    def test_missing_or_blank_author_raises(self, tmp_path, body):
+        with pytest.raises(ConfigError, match="needs a non-empty 'author'"):
+            self._load(tmp_path, body)
+
+    @pytest.mark.parametrize(
+        "labels", ['"S-Python"', "null", "[1]", '[""]', '["S-Python", null]']
+    )
+    def test_malformed_unless_labels_raises(self, tmp_path, labels):
+        body = f'[{{"author": "renovate", "unless_labels": {labels}}}]'
+        with pytest.raises(ConfigError, match="'unless_labels' must be a list"):
+            self._load(tmp_path, body)
+
+    def test_unknown_key_raises(self, tmp_path):
+        # A misspelt "unless_label" would otherwise silently turn an
+        # exempting rule into an unconditional one.
+        body = '[{"author": "renovate", "unless_label": ["S-Python"]}]'
+        with pytest.raises(
+            ConfigError, match=r"'mute\[0\]' has unknown key\(s\): unless_label"
+        ):
+            self._load(tmp_path, body)
+
+    def test_error_names_the_offending_rule(self, tmp_path):
+        body = '[{"author": "renovate"}, {"author": ""}]'
+        with pytest.raises(ConfigError, match=r"'mute\[1\]'"):
+            self._load(tmp_path, body)
 
 
 class TestWeekDays:

@@ -18,7 +18,7 @@ uv add --dev <pkg>          # Add dev dependency
 
 ## Architecture
 
-Five-module design inside `gh_prs/`:
+Six-module design inside `gh_prs/`:
 
 - **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
   existing `gh auth` session. Exposes a `PullRequest` dataclass plus
@@ -29,14 +29,18 @@ Five-module design inside `gh_prs/`:
 - **`merge.py`** — Pure merge policy for the `merge` subcommand:
   `merge_blockers()` (why a PR must not be merged now) and `should_approve()`
   (approve first?). No `gh` calls, like `snooze.py`.
+- **`mute.py`** — Pure mute policy: `MuteRule` plus `is_muted()` /
+  `split_muted()`, deciding which fetched PRs a config rule silences for good
+  (a bot's bumps for a stack you don't own). No `gh` calls, like `merge.py`.
 - **`snooze.py`** — Local per-PR snooze store (`{PR url: {oid, until}}` JSON
   at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
   no `gh` calls. Raises `SnoozeError`.
-- **`config.py`** — Human-authored settings (`{stale_after, skip_weekends}`
-  JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from the
-  machine-managed snooze store so a hand-edit can't corrupt snooze state.
+- **`config.py`** — Human-authored settings (`{stale_after, skip_weekends,
+mute}` JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from
+  the machine-managed snooze store so a hand-edit can't corrupt snooze state.
   Reuses `snooze.parse_duration` and owns `week_days()`, the working-week
-  rule; missing file → defaults; raises `ConfigError`.
+  rule; parses `mute` rules into `mute.MuteRule`; missing file → defaults;
+  raises `ConfigError`.
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
 
@@ -212,8 +216,9 @@ authored-draft reasons do:
 
 User settings live in `$XDG_CONFIG_HOME/gh-prs/config.json`, separate from the
 machine-managed `snooze.json` (opposite fail-safe needs; a hand-edit must not
-be able to corrupt snooze state). Two keys, both tuning the **stale** and
-**stale-draft** nudges:
+be able to corrupt snooze state). Three keys. The first two tune the **stale**
+and **stale-draft** nudges; the third (`mute`) is covered in its own section
+below:
 
 - `stale_after` — a duration string (`"3d"`, `"1w"`) parsed by
   `snooze.parse_duration`, or `null` to disable both nudges.
@@ -247,6 +252,49 @@ family's inverted fail direction intact. Snooze windows deliberately stay
 calendar time: a snooze _hides_ a PR, so a longer window would delay its
 return — the opposite of the store's fail-toward-showing rule — and `--for` is
 explicit per-invocation input, taken literally like every other flag.
+
+### Muting (`mute.py`, `config.py`, applied in `cli.py`)
+
+A snooze silences one PR for a while; a mute rule silences a _kind_ of PR
+for good — the motivating case is a Renovate app whose Helm bumps request
+review from a whole team because branch protection demands a team review,
+while only the Python bumps are the viewer's to look at. Rules live in
+`config.json`:
+
+```json
+"mute": [{"author": "centreon-renovate", "unless_labels": ["S-Python"]}]
+```
+
+A rule matches when the PR's author login equals `author` and none of
+`unless_labels` is on the PR (both compared case-folded — GitHub treats
+logins and label names as case-insensitive). `author` is mandatory and
+`unless_labels` optional; any other key is a `ConfigError` (a misspelt
+`unless_label` would otherwise silently make an exempting rule
+unconditional), and one bad rule disables the whole list — a partial rule set
+would hide a different set of PRs than the one the user wrote down. The
+GraphQL login of a GitHub App is its slug without the REST API's `[bot]`
+suffix (`gh prs -r --json` prints `author` and `labels` as the tool sees
+them).
+
+Muting hides, so it follows the snooze store's fail-safe direction: positive
+evidence only. `from_graphql` reads `labels(first: 20)` (`_LABEL_PAGE_LIMIT`,
+pinned by a test like the review cap) into `labels` plus `labels_complete`,
+which is True only when the block is present, its nodes are all well-formed,
+and the count is below the cap. An `unless_labels` exemption can be ruled
+out only when `labels_complete` holds — otherwise a hidden label might be the
+exempting one and the PR shows; an unconditional rule (no `unless_labels`)
+needs no label evidence and mutes on the author alone. A PR with `author` in
+its `roles` is never muted, whatever the rules say: authored reasons are the
+actionable ones and mute rules are about other people's review requests.
+
+Application mirrors snoozing: only the attention view (table and `--count`)
+consults the rules; `-c`/`-r`/`-a` and `--json` stay exact. `split_muted`
+runs _before_ `split_snoozed`, so a lingering snooze on a now-muted PR does
+not inflate the "snoozed hidden" line, and the view prints a dim
+"N PR(s) muted by config" on stderr counting only muted PRs that would have
+needed attention. The rules ride on the same `_settings` read as the
+staleness settings, so a broken config warns once and yields no rules —
+hiding nothing.
 
 ### Snoozing (`snooze.py`, applied in `cli.py`)
 

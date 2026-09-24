@@ -52,6 +52,10 @@ _SEARCH_LIMIT = 100
 # arguments in _PR_FRAGMENT — pinned by a test, since the fragment is a plain
 # literal (interpolating it would mean escaping every GraphQL brace).
 _REVIEW_PAGE_LIMIT = 50
+# Per-PR cap on the labels connection (same sync rule as above). Twenty is
+# far above what any label scheme puts on one PR; at the cap the list is
+# reported incomplete so a mute exemption can't be missed.
+_LABEL_PAGE_LIMIT = 20
 
 # GraphQL statusCheckRollup.state → our normalized checks_state. Unknown
 # states map to PENDING so "unrecognized" can never mean "pass".
@@ -88,6 +92,7 @@ fragment prFields on PullRequest {
   baseRef { associatedPullRequests(states: OPEN) { totalCount } }
   repository { nameWithOwner }
   author { login }
+  labels(first: 20) { nodes { name } }
   reviewRequests(first: 50) {
     nodes { requestedReviewer { __typename ... on User { login } } }
   }
@@ -188,6 +193,14 @@ class PullRequest:
     # the base *branch* is clean), but merging would land it in the parent
     # PR's branch, not the default branch, so it isn't shippable yet.
     stacked: bool = False
+    # Label names on the PR, in GitHub's order. Consumers (mute rules) must
+    # pair it with labels_complete before treating an absence as evidence.
+    labels: tuple[str, ...] = ()
+    # True when `labels` is known to be the whole set: the connection was
+    # present and came back below its cap. False on shape drift or at the
+    # cap — a label beyond it could be the one that exempts the PR from a
+    # mute rule, so "not there" then proves nothing.
+    labels_complete: bool = False
     roles: set[str] = field(default_factory=set)
     # Reasons this PR needs the current user's attention (e.g. {"review", "ready"}).
     attention_reasons: set[str] = field(default_factory=set)
@@ -284,6 +297,23 @@ class PullRequest:
                 unresolved_feedback = True
                 break
 
+        # Labels ride along for the mute rules. Hiding needs positive evidence,
+        # so the list is only trusted (labels_complete) when the block is
+        # present and below its cap; null nodes (shape drift) are dropped
+        # but mark the set incomplete, since a name went missing.
+        labels_block = node.get("labels")
+        label_nodes = (labels_block or {}).get("nodes") or []
+        labels = tuple(
+            name
+            for label in label_nodes
+            if isinstance(name := (label or {}).get("name"), str)
+        )
+        labels_complete = (
+            isinstance(labels_block, dict)
+            and isinstance(labels_block.get("nodes"), list)
+            and len(labels) == len(label_nodes) < _LABEL_PAGE_LIMIT
+        )
+
         # Only User reviewers carry a login in the fragment; a request routed
         # through a Team therefore never matches `explicit` — but it is still
         # a pending request, so it counts toward has_pending_review_request.
@@ -318,6 +348,8 @@ class PullRequest:
             unresolved_feedback=unresolved_feedback,
             review_threads_truncated=len(threads) >= _REVIEW_PAGE_LIMIT,
             stacked=stacked,
+            labels=labels,
+            labels_complete=labels_complete,
         )
 
     @property

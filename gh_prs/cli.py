@@ -25,6 +25,7 @@ from gh_prs.gh import (
     resolve_pr,
 )
 from gh_prs.merge import merge_blockers, should_approve
+from gh_prs.mute import split_muted
 from gh_prs.snooze import (
     SnoozeEntry,
     SnoozeError,
@@ -207,6 +208,7 @@ def _to_dict(pr: PullRequest) -> dict[str, Any]:
         "hasPendingReviewRequest": pr.has_pending_review_request,
         "unresolvedFeedback": pr.unresolved_feedback,
         "stacked": pr.stacked,
+        "labels": list(pr.labels),
         "roles": sorted(pr.roles),
         "attentionReasons": sorted(pr.attention_reasons),
         "updatedAt": pr.updated_at,
@@ -675,6 +677,10 @@ def main(argv: list[str] | None = None) -> int:
     # The weekend policy stays the config's either way — it decides what the
     # flag's own 'w' means, so both are read the same way. The fast-count
     # path never computes attention reasons, so skip it there.
+    # The attention view (three qualifiers) never takes the fast path, so
+    # its mute rules always come from a real read; the default here only
+    # keeps the binding total for the single-qualifier counts.
+    config = Config()
     stale_after = None
     skip_weekends = False
     if not fast_count:
@@ -713,11 +719,24 @@ def main(argv: list[str] | None = None) -> int:
         print(count)
         return 0
 
-    # Only the attention view (table and --count, not --json) honors snoozes;
-    # explicit views (-c/-r/-a) and single-qualifier counts always show
-    # everything, so their numbers stay exact.
+    # Only the attention view (table and --count, not --json) honors mute
+    # rules and snoozes; explicit views (-c/-r/-a) and single-qualifier
+    # counts always show everything, so their numbers stay exact.
     hidden_snoozed: list[PullRequest] = []
     if args.view == "attention" and not args.json:
+        # Mute first: a muted PR is out of the picture for good, so it must
+        # not count as "snoozed hidden" while an old snooze entry lingers.
+        # The rules come from the same config read as the staleness
+        # settings, and a broken config already warned and yielded none.
+        prs, muted = split_muted(prs, config.mute)
+        # Like snoozing, hiding is never silent — but only PRs that would
+        # have shown up are worth mentioning.
+        muted_count = sum(pr.needs_attention() for pr in muted)
+        if muted_count:
+            err.print(
+                f"[dim]{muted_count} PR(s) muted by config — "
+                "'gh prs -r' still lists them[/dim]"
+            )
         try:
             snoozes = load_snoozes()
         except SnoozeError as exc:

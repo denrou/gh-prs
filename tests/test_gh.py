@@ -773,6 +773,14 @@ class TestPrFragment:
             "reviewRequests / latestReviews / latestOpinionatedReviews / reviewThreads"
         )
 
+    def test_labels_connection_matches_the_page_limit_constant(self):
+        # Same drift hazard: _LABEL_PAGE_LIMIT decides when labels_complete
+        # must read False, and the fragment is a plain literal.
+        assert f"labels(first: {gh._LABEL_PAGE_LIMIT})" in gh._PR_FRAGMENT
+        assert gh._LABEL_PAGE_LIMIT != gh._REVIEW_PAGE_LIMIT, (
+            "the review-connection count above would silently include labels"
+        )
+
     def test_fragment_requests_every_field_the_parser_reads(self):
         for field in (
             "headRefOid",
@@ -785,6 +793,7 @@ class TestPrFragment:
             "baseRef",
             "associatedPullRequests",
             "state",
+            "labels",
         ):
             assert field in gh._PR_FRAGMENT, field
 
@@ -1121,6 +1130,45 @@ class TestFromGraphql:
     def test_below_cap_is_not_truncated(self):
         node = _node(reviewThreads={"nodes": [self._thread("me")]})
         assert PullRequest.from_graphql(node, "me").review_threads_truncated is False
+
+    # --- labels (mute rules) ---------------------------------------------
+
+    def test_labels_are_parsed_in_order_and_marked_complete(self):
+        node = _node(labels={"nodes": [{"name": "C-Deps"}, {"name": "S-Helm"}]})
+        pr = PullRequest.from_graphql(node)
+        assert pr.labels == ("C-Deps", "S-Helm")
+        assert pr.labels_complete is True
+
+    def test_no_labels_is_a_known_empty_set(self):
+        pr = PullRequest.from_graphql(_node(labels={"nodes": []}))
+        assert pr.labels == ()
+        assert pr.labels_complete is True
+
+    def test_missing_labels_block_is_incomplete(self):
+        # Shape drift: the default _node() carries no labels block at all.
+        # "No labels seen" must not read as "no exempting label".
+        pr = PullRequest.from_graphql(_node())
+        assert pr.labels == ()
+        assert pr.labels_complete is False
+
+    def test_null_labels_block_or_nodes_is_incomplete(self):
+        assert PullRequest.from_graphql(_node(labels=None)).labels_complete is False
+        pr = PullRequest.from_graphql(_node(labels={"nodes": None}))
+        assert pr.labels_complete is False
+
+    def test_null_label_node_is_dropped_and_marks_the_set_incomplete(self):
+        node = _node(labels={"nodes": [{"name": "C-Deps"}, None, {"name": None}]})
+        pr = PullRequest.from_graphql(node)
+        assert pr.labels == ("C-Deps",)
+        assert pr.labels_complete is False
+
+    def test_labels_at_the_cap_are_incomplete(self):
+        names = [{"name": f"L{i}"} for i in range(gh._LABEL_PAGE_LIMIT)]
+        pr = PullRequest.from_graphql(_node(labels={"nodes": names}))
+        assert len(pr.labels) == gh._LABEL_PAGE_LIMIT
+        assert pr.labels_complete is False
+        below = PullRequest.from_graphql(_node(labels={"nodes": names[:-1]}))
+        assert below.labels_complete is True
 
 
 def _completed(

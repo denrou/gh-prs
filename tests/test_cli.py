@@ -168,6 +168,7 @@ class TestJsonOutput:
             '"reviewRequestedExplicitly"',
             '"changesRequestedCommits"',
             '"hasPendingReviewRequest"',
+            '"labels"',
             '"roles"',
             '"attentionReasons"',
             '"updatedAt"',
@@ -496,6 +497,134 @@ class TestSnoozeFiltering:
         captured = capsys.readouterr()
         assert "PR 1" in captured.out
         assert "ignoring snoozes" in captured.err
+
+
+def _mute_config(tmp_path, rules: str) -> None:
+    """Write a config.json with the given mute rules into the isolated XDG home."""
+    path = tmp_path / "gh-prs" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'{{"mute": {rules}}}', encoding="utf-8")
+
+
+def _bot_pr(number: int, **overrides) -> PullRequest:
+    defaults = dict(
+        author="renovate",
+        labels=("C-Deps", "S-Helm"),
+        labels_complete=True,
+        roles={"review-requested"},
+        attention_reasons={"review"},
+    )
+    return _pr(number, **(defaults | overrides))
+
+
+class TestMuteFiltering:
+    def test_muted_pr_hidden_from_attention_view_and_noted(
+        self, fake_backend, isolated_config, capsys
+    ):
+        _mute_config(
+            isolated_config, '[{"author": "renovate", "unless_labels": ["S-Python"]}]'
+        )
+        fake_backend["prs"] = [
+            _bot_pr(1),
+            _bot_pr(2, labels=("C-Deps", "S-Python")),
+            _pr(3, roles={"review-requested"}, attention_reasons={"review"}),
+        ]
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" not in captured.out
+        assert "PR 2" in captured.out
+        assert "PR 3" in captured.out
+        assert "1 PR(s) muted by config" in captured.err
+
+    def test_attention_count_excludes_muted(
+        self, fake_backend, isolated_config, capsys
+    ):
+        _mute_config(isolated_config, '[{"author": "renovate"}]')
+        fake_backend["prs"] = [
+            _bot_pr(1),
+            _pr(2, roles={"review-requested"}, attention_reasons={"review"}),
+        ]
+        assert cli.main(["--count", "--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "1"
+        assert "1 PR(s) muted by config" in captured.err
+
+    def test_muted_pr_without_attention_reasons_is_not_counted(
+        self, fake_backend, isolated_config, capsys
+    ):
+        _mute_config(isolated_config, '[{"author": "renovate"}]')
+        fake_backend["prs"] = [_bot_pr(1, attention_reasons=set())]
+        assert cli.main(["--no-color"]) == 0
+        assert "muted by config" not in capsys.readouterr().err
+
+    def test_review_view_ignores_mute_rules(
+        self, fake_backend, isolated_config, capsys
+    ):
+        _mute_config(isolated_config, '[{"author": "renovate"}]')
+        fake_backend["prs"] = [_bot_pr(1)]
+        assert cli.main(["-r", "--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "muted" not in captured.err
+
+    def test_json_ignores_mute_rules(self, fake_backend, isolated_config, capsys):
+        _mute_config(isolated_config, '[{"author": "renovate"}]')
+        fake_backend["prs"] = [_bot_pr(1)]
+        assert cli.main(["--json", "--no-color"]) == 0
+        captured = capsys.readouterr()
+        # print_json styles keys separately, so match a plain value.
+        assert '"acme/widgets"' in captured.out
+        assert "muted" not in captured.err
+
+    def test_authored_pr_is_never_muted(self, fake_backend, isolated_config, capsys):
+        _mute_config(isolated_config, '[{"author": "octocat"}]')
+        fake_backend["prs"] = [
+            _pr(1, author="octocat", roles={"author"}, attention_reasons={"ready"})
+        ]
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "muted" not in captured.err
+
+    def test_incomplete_labels_keep_the_pr_visible(
+        self, fake_backend, isolated_config, capsys
+    ):
+        _mute_config(
+            isolated_config, '[{"author": "renovate", "unless_labels": ["S-Python"]}]'
+        )
+        fake_backend["prs"] = [_bot_pr(1, labels_complete=False)]
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "muted" not in captured.err
+
+    def test_muted_pr_does_not_count_as_snoozed_hidden(
+        self, fake_backend, isolated_config, capsys
+    ):
+        # A lingering snooze on a now-muted PR must not inflate the snooze
+        # line: muting is applied first.
+        _mute_config(isolated_config, '[{"author": "renovate"}]')
+        fake_backend["prs"] = [_bot_pr(1, url=_SNOOZE_URL, head_ref_oid="cafe")]
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "1 PR(s) muted by config" in captured.err
+        assert "snoozed PR(s) hidden" not in captured.err
+
+    def test_broken_mute_config_warns_and_mutes_nothing(
+        self, fake_backend, isolated_config, capsys
+    ):
+        # Fail-safe: a bad rule set shows everything rather than guessing
+        # which rules the user meant.
+        _mute_config(
+            isolated_config, '[{"author": "renovate", "unless_label": ["S-Python"]}]'
+        )
+        fake_backend["prs"] = [_bot_pr(1)]
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "ignoring config" in captured.err
+        assert "muted" not in captured.err
 
 
 class TestSnoozeActions:

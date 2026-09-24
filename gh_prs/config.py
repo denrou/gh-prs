@@ -7,11 +7,15 @@ two want opposite fail-safe handling, so they live in separate files.
 
 The store is a JSON object at ``$XDG_CONFIG_HOME/gh-prs/config.json``
 (``~/.config/gh-prs/config.json`` by default). A missing file means "all
-defaults". Both settings tune the 'stale' nudge on authored PRs still
-awaiting review and the 'stale-draft' nudge on authored drafts:
+defaults". Two settings tune the 'stale' nudge on authored PRs still awaiting
+review and the 'stale-draft' nudge on authored drafts; a third lists the
+review requests to silence for good (see ``mute.py``):
 
     {"stale_after": "3d",      # the silence threshold; null disables both nudges
-     "skip_weekends": false}   # true: count working time only, not calendar time
+     "skip_weekends": false,   # true: count working time only, not calendar time
+     "mute": [                 # hide these authors' PRs from the attention view…
+       {"author": "centreon-renovate", "unless_labels": ["S-Python"]}
+     ]}                        # …except the ones carrying an exempting label
 
 ``skip_weekends`` stops the clock on Saturdays and Sundays, so a PR pushed on
 Friday is not nudged on Monday for a weekend nobody was working. It also
@@ -31,6 +35,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from gh_prs.gh import DEFAULT_STALE_AFTER
+from gh_prs.mute import MuteRule
 from gh_prs.snooze import CALENDAR_WEEK_DAYS, SnoozeError, parse_duration
 
 
@@ -52,6 +57,9 @@ class Config:
     # Measure that threshold in working time, skipping Saturdays and Sundays
     # in the machine's local timezone.
     skip_weekends: bool = False
+    # Review requests to hide from the attention view, in file order. Empty
+    # by default: nothing is ever muted unless the user asked for it.
+    mute: tuple[MuteRule, ...] = ()
 
 
 def week_days(skip_weekends: bool) -> int:
@@ -96,6 +104,7 @@ def load_config(path: Path | None = None) -> Config:
     return Config(
         stale_after=_parse_stale_after(data, path, skip_weekends),
         skip_weekends=skip_weekends,
+        mute=_parse_mute(data, path),
     )
 
 
@@ -131,3 +140,46 @@ def _parse_stale_after(data: dict, path: Path, skip_weekends: bool) -> timedelta
         return parse_duration(value, week_days=week_days(skip_weekends))
     except SnoozeError as e:
         raise ConfigError(f"{path}: invalid 'stale_after': {e}") from e
+
+
+# The keys a mute rule may carry. Anything else is rejected rather than
+# ignored: a misspelt "unless_label" would otherwise silently turn an
+# exempting rule into an unconditional one.
+_MUTE_RULE_KEYS = frozenset({"author", "unless_labels"})
+
+
+def _parse_mute(data: dict, path: Path) -> tuple[MuteRule, ...]:
+    """Read the ``mute`` list: absent → no rules.
+
+    Each rule is an object with a non-empty ``author`` login and an optional
+    ``unless_labels`` list of non-empty label names. The whole list is
+    validated before any rule is kept, so a bad entry disables muting
+    entirely (the caller warns and falls back to defaults) instead of
+    applying the rules around it — a partial rule set would hide a
+    different set of PRs than the one the user wrote down.
+    """
+    if "mute" not in data:
+        return ()
+    rules = data["mute"]
+    if not isinstance(rules, list):
+        raise ConfigError(f"{path}: 'mute' must be a list of rules")
+    parsed: list[MuteRule] = []
+    for index, rule in enumerate(rules):
+        where = f"{path}: 'mute[{index}]'"
+        if not isinstance(rule, dict):
+            raise ConfigError(f'{where} must be an object like {{"author": ...}}')
+        unknown = sorted(set(rule) - _MUTE_RULE_KEYS)
+        if unknown:
+            raise ConfigError(f"{where} has unknown key(s): {', '.join(unknown)}")
+        author = rule.get("author")
+        if not isinstance(author, str) or not author.strip():
+            raise ConfigError(f"{where} needs a non-empty 'author' login")
+        labels = rule.get("unless_labels", [])
+        if not isinstance(labels, list) or not all(
+            isinstance(label, str) and label.strip() for label in labels
+        ):
+            raise ConfigError(
+                f"{where}: 'unless_labels' must be a list of non-empty label names"
+            )
+        parsed.append(MuteRule(author=author.strip(), unless_labels=frozenset(labels)))
+    return tuple(parsed)
