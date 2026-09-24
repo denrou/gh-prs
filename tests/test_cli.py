@@ -1,5 +1,7 @@
 """CLI tests: qualifier selection, --count semantics, failure surfacing, snoozing, escaping."""
 
+import json
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -177,6 +179,29 @@ class TestJsonOutput:
             assert key in out, key
         # Sets are serialized sorted for stable output.
         assert out.index('"author"') < out.index('"review-requested"')
+
+    def test_json_to_a_pipe_is_plain_and_parseable(self, fake_backend, capsys):
+        # capsys is not a terminal: no escape codes, whatever the environment
+        # (FORCE_COLOR included) says.
+        fake_backend["prs"] = [
+            _pr(7, labels=("S-Python",), attention_reasons={"review"})
+        ]
+        assert cli.main(["--json"]) == 0
+        out = capsys.readouterr().out
+        assert "\x1b[" not in out
+        assert json.loads(out) == [cli._to_dict(fake_backend["prs"][0])]
+
+    def test_json_with_no_color_is_plain_even_on_a_terminal(
+        self, fake_backend, capsys, monkeypatch
+    ):
+        # rich's no_color strips colors but keeps bold; --json must mean
+        # raw JSON, so the flag routes around rich entirely.
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        fake_backend["prs"] = [_pr(7)]
+        assert cli.main(["--json", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "\x1b[" not in out
+        assert json.loads(out)[0]["number"] == 7
 
 
 class TestStaleThreshold:
@@ -572,8 +597,7 @@ class TestMuteFiltering:
         fake_backend["prs"] = [_bot_pr(1)]
         assert cli.main(["--json", "--no-color"]) == 0
         captured = capsys.readouterr()
-        # print_json styles keys separately, so match a plain value.
-        assert '"acme/widgets"' in captured.out
+        assert json.loads(captured.out)[0]["number"] == 1
         assert "muted" not in captured.err
 
     def test_authored_pr_is_never_muted(self, fake_backend, isolated_config, capsys):

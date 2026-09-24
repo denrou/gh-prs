@@ -1,6 +1,7 @@
 """Command-line interface for listing (and merging) GitHub pull requests that need action."""
 
 import argparse
+import json
 import re
 import sys
 from datetime import UTC, datetime
@@ -776,7 +777,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.json:
-        console.print_json(data=[_to_dict(pr) for pr in prs])
+        data = [_to_dict(pr) for pr in prs]
+        if sys.stdout.isatty() and not args.no_color:
+            console.print_json(data=data)
+        else:
+            # --json is a scripting interface: to a pipe, or with --no-color,
+            # emit bytes json.loads can read back. rich's print_json keeps
+            # bold attributes under no_color and colors under FORCE_COLOR.
+            print(json.dumps(data, indent=2))
         return 0
 
     if args.view == "attention":

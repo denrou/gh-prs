@@ -395,6 +395,10 @@ confirmation step before it can ship.
 ## Notes
 
 - `ruff` rule `E501` (line length) is not enforced.
+- `--json` is a scripting interface: to a pipe, or under `--no-color`, it
+  goes through `json.dumps` rather than rich's `print_json`, which keeps bold
+  attributes under `no_color` and emits colors under `FORCE_COLOR`. Only an
+  interactive terminal without the flag gets the styled rendering.
 - GraphQL `statusCheckRollup.state` is normalized via `_ROLLUP_STATE`; unknown
   future states map to `PENDING` so "unrecognized" never counts as passing.
 - PR titles are attacker-controlled: they are stripped of control characters
