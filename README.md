@@ -107,7 +107,7 @@ gh prs --count      # print only the PR count for the selected view
                     # (attention count by default; handy for status bars)
 gh prs --no-color   # disable colored output
 
-gh prs snooze 123           # hide a PR (of the current repo) for 24h
+gh prs snooze 123           # hide a PR (of the current repo) until tomorrow morning
 gh prs snooze 123 -R o/r    # …of another repo (owner/repo)
 gh prs snooze 12 34 --for 3d  # …several at once, for a custom window (12h, 3d, 1w)
 gh prs unsnooze 123         # remove a PR's snooze
@@ -136,7 +136,11 @@ the way `gh` does: a bare number, scoped by `-R/--repo owner/repo` (or the
 repository of the current directory when omitted), or a full URL. Bare numbers
 are resolved through `gh`, so Enterprise hosts work too.
 
-A snooze lasts 24 hours by default (`--for 12h`/`3d`/`1w` to change) and is
+A snooze lasts until tomorrow morning by default (`--for 12h`/`3d`/`1w` to
+change). Days and weeks are counted on the calendar and end at local midnight:
+`--for 1d` at noon, or at 7 a.m., brings the PR back on your first look
+tomorrow, and `--for 3d` on the morning three days from now. Hours stay an
+exact span — `--for 4h` means four hours. A snooze is
 also tied to the PR's state at snooze time: its head commit _and_ the reasons
 it needs your attention. Whichever comes first — the window elapsing, new
 commits landing, or those reasons changing (say a review lands and a PR that
@@ -200,15 +204,18 @@ a third silences review requests you never intend to answer:
 
 `stale_after` is the silence threshold. It accepts the same duration syntax as
 `--for`/`--stale-after` (`12h`, `3d`, `1w`), or `null` to disable both nudges.
-The `--stale-after` flag overrides the file for a single run.
+The `--stale-after` flag overrides the file for a single run. As with snoozes,
+days are counted on the calendar: with `3d`, a PR last touched on Monday is
+flagged from Thursday morning, whatever the hour on Monday, so the day's
+nudges are all there when you start instead of trickling in through the
+afternoon. A threshold in hours (`72h`) stays an exact span.
 
-`skip_weekends` (default `false`) stops the clock on Saturdays and Sundays, in
-your machine's timezone, so a PR pushed on Friday isn't flagged on Monday for a
-weekend nobody spent reviewing. It also makes `1w` five days rather than seven,
-which keeps it a same-weekday anniversary: a Thursday PR is nudged the
-following Thursday, not the Monday after. Snooze windows (`--for`) stay
-calendar time — a snooze hides a PR, and stretching it over the weekend would
-only delay its return.
+`skip_weekends` (default `false`) leaves Saturdays and Sundays out, in your
+machine's timezone, so a PR pushed on Friday isn't flagged on Monday for a
+weekend nobody spent reviewing. It applies to snoozes too: `--for 1d` on a
+Friday brings the PR back on Monday morning. It also makes `1w` five days
+rather than seven, which keeps it a same-weekday anniversary: a Thursday PR is
+nudged the following Thursday, not the Monday after.
 
 `mute` is a list of rules, each naming a PR `author` and, optionally, the
 `unless_labels` that exempt a PR from it. The example reads "hide

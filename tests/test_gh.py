@@ -1,15 +1,14 @@
 """Tests for gh_prs.gh: attention reasons, GraphQL parsing, and fetch orchestration."""
 
 import json
-import os
 import subprocess
-import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from gh_prs import gh
+from gh_prs.duration import Duration
 from gh_prs.gh import (
     GhError,
     PullRequest,
@@ -19,7 +18,7 @@ from gh_prs.gh import (
 )
 
 _NOW = datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC)
-_STALE_AFTER = timedelta(days=3)
+_STALE_AFTER = Duration(3, "d")
 
 # A zone with a DST change, for the working-time clock below.
 _PARIS = ZoneInfo("Europe/Paris")
@@ -28,28 +27,6 @@ _PARIS = ZoneInfo("Europe/Paris")
 def _paris(*args) -> datetime:
     """An aware datetime in Europe/Paris, e.g. _paris(2026, 7, 23, 10)."""
     return datetime(*args, tzinfo=_PARIS)
-
-
-@pytest.fixture
-def paris_local_tz():
-    """Pin the machine's local zone to Europe/Paris.
-
-    The working-time clock reads the local calendar (which instants fall on a
-    Saturday), so these tests must not depend on where they run. Restored by
-    hand rather than via monkeypatch: tzset() has to run again *after* the
-    environment is back, and monkeypatch's own teardown comes later.
-    """
-    previous = os.environ.get("TZ")
-    os.environ["TZ"] = "Europe/Paris"
-    time.tzset()
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop("TZ", None)
-        else:
-            os.environ["TZ"] = previous
-        time.tzset()
 
 
 def _pr(**overrides) -> PullRequest:
@@ -670,58 +647,105 @@ class TestIsStale:
 
 
 @pytest.mark.usefixtures("paris_local_tz")
-class TestIsStaleSkippingWeekends:
-    """The clock stops on Saturdays and Sundays, on the local calendar."""
+class TestIsStaleCountingDays:
+    """A threshold in days counts local calendar days, not 24-hour spans."""
 
-    def _stale(self, updated: datetime, now: datetime, after: timedelta) -> bool:
+    def test_stale_from_the_midnight_opening_the_nth_day(self):
+        # Monday 16:00 + 3d: stale from Thursday 00:00, not Thursday 16:00,
+        # so the nudge is there on the first look of the morning.
+        updated = _paris(2026, 7, 20, 16).isoformat()
+        assert _is_stale(updated, _paris(2026, 7, 22, 23, 59), _STALE_AFTER) is False
+        assert _is_stale(updated, _paris(2026, 7, 23, 0), _STALE_AFTER) is True
+
+    def test_hour_of_the_update_does_not_matter(self):
+        # Early morning and late evening on the same day are nudged together.
+        for hour in (0, 23):
+            updated = _paris(2026, 7, 20, hour).isoformat()
+            assert _is_stale(updated, _paris(2026, 7, 23, 0), _STALE_AFTER) is True
+
+    def test_local_calendar_decides_the_day(self):
+        # 23:30 UTC on Monday is already Tuesday 01:30 in Paris: the three
+        # days count from Tuesday.
+        updated = "2026-07-20T23:30:00Z"
+        assert _is_stale(updated, _paris(2026, 7, 23, 12), _STALE_AFTER) is False
+        assert _is_stale(updated, _paris(2026, 7, 24, 0), _STALE_AFTER) is True
+
+    def test_hours_stay_an_exact_span(self):
+        updated, after = _paris(2026, 7, 20, 16).isoformat(), Duration(72, "h")
+        assert _is_stale(updated, _paris(2026, 7, 23, 15, 59), after) is False
+        assert _is_stale(updated, _paris(2026, 7, 23, 16), after) is True
+
+
+@pytest.mark.usefixtures("paris_local_tz")
+class TestIsStaleSkippingWeekends:
+    """Saturdays and Sundays do not count, on the local calendar."""
+
+    def _stale(self, updated: datetime, now: datetime, after: Duration) -> bool:
         return _is_stale(updated.isoformat(), now, after, True)
 
     def test_weekend_does_not_count_toward_the_threshold(self):
-        # Thursday 10:00 → Monday 10:00 is four calendar days but only two
-        # working ones: no nudge for a weekend nobody spent reviewing.
+        # Thursday 10:00 → Monday 10:00 is four calendar days but only one
+        # working one: no nudge for a weekend nobody spent reviewing.
         updated, now = _paris(2026, 7, 23, 10), _paris(2026, 7, 27, 10)
-        assert self._stale(updated, now, timedelta(days=3)) is False
-        assert _is_stale(updated.isoformat(), now, timedelta(days=3)) is True
+        assert self._stale(updated, now, _STALE_AFTER) is False
+        assert _is_stale(updated.isoformat(), now, _STALE_AFTER) is True
 
     def test_three_working_days_from_thursday_land_on_tuesday(self):
         updated = _paris(2026, 7, 23, 10)
-        assert self._stale(updated, _paris(2026, 7, 28, 9, 59), _STALE_AFTER) is False
-        assert self._stale(updated, _paris(2026, 7, 28, 10), _STALE_AFTER) is True
+        assert self._stale(updated, _paris(2026, 7, 27, 23, 59), _STALE_AFTER) is False
+        assert self._stale(updated, _paris(2026, 7, 28, 0), _STALE_AFTER) is True
 
     def test_a_working_week_is_the_same_weekday_next_week(self):
         # Five working days is what 'w' means under this policy (see
         # config.week_days): a Thursday PR is nudged the following Thursday.
-        updated, week = _paris(2026, 7, 23, 10), timedelta(days=5)
-        assert self._stale(updated, _paris(2026, 7, 30, 9, 59), week) is False
-        assert self._stale(updated, _paris(2026, 7, 30, 10), week) is True
+        updated, week = _paris(2026, 7, 23, 10), Duration(5, "d")
+        assert self._stale(updated, _paris(2026, 7, 29, 23, 59), week) is False
+        assert self._stale(updated, _paris(2026, 7, 30, 0), week) is True
 
-    def test_weekend_activity_starts_counting_on_monday(self):
-        # Pushed Saturday afternoon: the clock only starts Monday 00:00, so
-        # 43 calendar hours later is nine working hours.
-        updated = _paris(2026, 7, 25, 14)
-        assert self._stale(updated, _paris(2026, 7, 27, 9), timedelta(days=1)) is False
-        assert self._stale(updated, _paris(2026, 7, 28, 9), timedelta(days=1)) is True
+    def test_weekend_activity_counts_like_friday(self):
+        # The first working day after a Friday or a weekend push is Monday.
+        for day in (24, 25, 26):
+            updated = _paris(2026, 7, day, 14)
+            assert (
+                self._stale(updated, _paris(2026, 7, 26, 23, 59), Duration(1, "d"))
+                is False
+            )
+            assert (
+                self._stale(updated, _paris(2026, 7, 27, 0), Duration(1, "d")) is True
+            )
 
     def test_several_weekends_are_all_skipped(self):
         # Three weeks apart: 21 calendar days, 15 working ones.
         updated, now = _paris(2026, 7, 6, 10), _paris(2026, 7, 27, 10)
-        assert self._stale(updated, now, timedelta(days=15)) is True
-        assert self._stale(updated, now, timedelta(days=16)) is False
+        assert self._stale(updated, now, Duration(15, "d")) is True
+        assert self._stale(updated, now, Duration(16, "d")) is False
 
-    def test_dst_change_over_the_weekend_keeps_the_wall_clock(self):
-        # Europe/Paris falls back on Sunday 2026-10-25, so Thursday 10:00 to
-        # Tuesday 10:00 is three working days on the calendar but 3d1h of
-        # absolute time. The 09:59 case is what pins the wall-clock reading:
-        # measuring absolute elapsed time would nudge an hour early.
+    def test_dst_change_over_the_weekend_keeps_the_local_midnight(self):
+        # Europe/Paris falls back on Sunday 2026-10-25: the deadline is still
+        # Tuesday 00:00 local time, an hour later in UTC than before the change.
         updated = _paris(2026, 10, 22, 10)
-        assert self._stale(updated, _paris(2026, 10, 27, 9, 59), _STALE_AFTER) is False
-        assert self._stale(updated, _paris(2026, 10, 27, 10), _STALE_AFTER) is True
+        assert self._stale(updated, _paris(2026, 10, 26, 23, 59), _STALE_AFTER) is False
+        assert self._stale(updated, _paris(2026, 10, 27, 0), _STALE_AFTER) is True
 
-    def test_timestamp_in_the_future_is_not_stale(self):
+    def test_hours_run_on_a_clock_stopped_over_the_weekend(self):
+        # Thursday 10:00 + 72 working hours is Tuesday 10:00, to the minute.
+        updated, after = _paris(2026, 7, 23, 10), Duration(72, "h")
+        assert self._stale(updated, _paris(2026, 7, 28, 9, 59), after) is False
+        assert self._stale(updated, _paris(2026, 7, 28, 10), after) is True
+
+    def test_dst_change_keeps_the_wall_clock_for_hours(self):
+        # Thursday 10:00 to Tuesday 10:00 across the fall-back is 72 working
+        # hours on the calendar but 73 of absolute time.
+        updated, after = _paris(2026, 10, 22, 10), Duration(72, "h")
+        assert self._stale(updated, _paris(2026, 10, 27, 9, 59), after) is False
+        assert self._stale(updated, _paris(2026, 10, 27, 10), after) is True
+
+    @pytest.mark.parametrize("after", [_STALE_AFTER, Duration(72, "h")])
+    def test_timestamp_in_the_future_is_not_stale(self, after):
         # Clock skew must not have the weekend subtracted from a negative
         # span and come out looking old.
         updated, now = _paris(2026, 7, 27, 10), _paris(2026, 7, 20, 10)
-        assert self._stale(updated, now, _STALE_AFTER) is False
+        assert self._stale(updated, now, after) is False
 
     @pytest.mark.parametrize("bad", ["", "not-a-date", "2026-07-01T12:00:00", None])
     def test_unusable_timestamp_stays_quiet(self, bad):
@@ -733,7 +757,7 @@ class TestIsStaleSkippingWeekends:
 class TestStaleNudgesSkippingWeekends:
     """Both nudges take the working-time clock when skip_weekends is set."""
 
-    # Thursday 10:00 Paris to Monday 10:00: four calendar days, two working.
+    # Thursday 10:00 Paris to Monday 10:00: four calendar days, one working.
     _UPDATED = _paris(2026, 7, 23, 10).isoformat()
     _MONDAY = _paris(2026, 7, 27, 10)
 

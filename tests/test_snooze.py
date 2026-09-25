@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from gh_prs.duration import Duration
 from gh_prs.gh import PullRequest
 from gh_prs.snooze import (
     SnoozeError,
@@ -37,7 +38,7 @@ def _pr(url: str = _URL, **overrides) -> PullRequest:
 
 def _entry(oid: str = "cafe123", hours: float = 24) -> dict[str, str]:
     """A store entry expiring ``hours`` after the fixed test clock."""
-    return make_entry(oid, _NOW, timedelta(hours=hours))
+    return make_entry(oid, _NOW + timedelta(hours=hours))
 
 
 class TestNormalizePrUrl:
@@ -96,11 +97,11 @@ class TestParseDuration:
     @pytest.mark.parametrize(
         ("text", "expected"),
         [
-            ("12h", timedelta(hours=12)),
-            ("24h", timedelta(hours=24)),
-            ("3d", timedelta(days=3)),
-            ("1w", timedelta(weeks=1)),
-            (" 2D ", timedelta(days=2)),  # case- and whitespace-insensitive
+            ("12h", Duration(12, "h")),
+            ("24h", Duration(24, "h")),  # hours stay hours, never folded into a day
+            ("3d", Duration(3, "d")),
+            ("1w", Duration(7, "d")),
+            (" 2D ", Duration(2, "d")),  # case- and whitespace-insensitive
         ],
     )
     def test_valid_durations(self, text, expected):
@@ -116,26 +117,32 @@ class TestParseDuration:
     @pytest.mark.parametrize(
         ("text", "expected"),
         [
-            ("1w", timedelta(days=5)),
-            ("2w", timedelta(days=10)),
-            ("3d", timedelta(days=3)),  # only 'w' changes length
-            ("12h", timedelta(hours=12)),
+            ("1w", Duration(5, "d")),
+            ("2w", Duration(10, "d")),
+            ("3d", Duration(3, "d")),  # only 'w' changes length
+            ("12h", Duration(12, "h")),
         ],
     )
     def test_week_days_resizes_only_the_week_unit(self, text, expected):
         assert parse_duration(text, week_days=5) == expected
 
     def test_a_huge_working_week_is_a_clean_error_not_a_crash(self):
-        # The multiplication is the one arithmetic this parameter adds; an
-        # overflow through it must still surface as SnoozeError.
+        # The multiplication is the one arithmetic this parameter adds; a
+        # week past the cap through it must still surface as SnoozeError.
         with pytest.raises(SnoozeError):
             parse_duration("9" * 100 + "w", week_days=5)
 
     def test_overflowing_duration_is_a_clean_error_not_a_crash(self):
-        # A syntactically valid but enormous value overflows timedelta; it must
-        # surface as SnoozeError, not escape as an uncaught OverflowError.
+        # A syntactically valid but enormous value would overflow datetime
+        # once turned into a timestamp; it must surface as SnoozeError here.
         with pytest.raises(SnoozeError):
             parse_duration("9" * 100 + "d")
+
+    @pytest.mark.parametrize("unit, cap", [("d", 36_500), ("h", 36_500 * 24)])
+    def test_durations_are_capped_at_a_century(self, unit, cap):
+        assert parse_duration(f"{cap}{unit}") == Duration(cap, unit)
+        with pytest.raises(SnoozeError):
+            parse_duration(f"{cap + 1}{unit}")
 
     def test_absurdly_long_digit_string_is_a_clean_error(self):
         # Beyond CPython's int-string conversion limit int() raises ValueError;
@@ -190,7 +197,7 @@ class TestStore:
 
     def test_entry_with_reasons_roundtrips(self, tmp_path):
         path = tmp_path / "snooze.json"
-        entry = make_entry("cafe", _NOW, timedelta(hours=24), ["review"])
+        entry = make_entry("cafe", _NOW + timedelta(hours=24), ["review"])
         save_snoozes({_URL: entry}, path)
         assert load_snoozes(path) == {_URL: entry}
 
@@ -210,16 +217,16 @@ class TestStore:
 
 class TestMakeEntry:
     def test_reasons_stored_sorted(self):
-        entry = make_entry("cafe", _NOW, timedelta(hours=1), ["review", "conflict"])
+        entry = make_entry("cafe", _NOW + timedelta(hours=1), ["review", "conflict"])
         assert entry["reasons"] == ["conflict", "review"]
 
     def test_no_reasons_omits_key(self):
-        assert "reasons" not in make_entry("cafe", _NOW, timedelta(hours=1))
+        assert "reasons" not in make_entry("cafe", _NOW + timedelta(hours=1))
 
     def test_empty_reasons_kept_distinct_from_absent(self):
         # [] means "captured, had none" — a later non-empty set must differ
         # from it — so the key is present, unlike the None (absent) case.
-        assert make_entry("cafe", _NOW, timedelta(hours=1), [])["reasons"] == []
+        assert make_entry("cafe", _NOW + timedelta(hours=1), [])["reasons"] == []
 
 
 class TestIsExpired:

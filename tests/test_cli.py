@@ -2,12 +2,13 @@
 
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from rich.console import Console
 
 from gh_prs import cli
+from gh_prs.duration import Duration, add_days
 from gh_prs.gh import DEFAULT_STALE_AFTER, GhError, PullRequest
 from gh_prs.snooze import load_snoozes, make_entry, save_snoozes, snooze_path
 
@@ -23,6 +24,11 @@ def _pr(number: int, **overrides) -> PullRequest:
         is_draft=False,
     )
     return PullRequest(number=number, **(defaults | overrides))
+
+
+def _local_midnight(day: date) -> datetime:
+    """The local midnight opening ``day``, as a day-based snooze stores it."""
+    return datetime.combine(day, time()).astimezone()
 
 
 @pytest.fixture(autouse=True)
@@ -219,17 +225,17 @@ class TestStaleThreshold:
 
     def test_flag_overrides_default(self, fake_backend):
         assert cli.main(["--stale-after", "5d"]) == 0
-        assert fake_backend["stale_after"] == timedelta(days=5)
+        assert fake_backend["stale_after"] == Duration(5, "d")
 
     def test_config_file_value_used(self, fake_backend, isolated_config):
         self._write_config(isolated_config, '{"stale_after": "1w"}')
         assert cli.main([]) == 0
-        assert fake_backend["stale_after"] == timedelta(weeks=1)
+        assert fake_backend["stale_after"] == Duration(7, "d")
 
     def test_flag_beats_config_file(self, fake_backend, isolated_config):
         self._write_config(isolated_config, '{"stale_after": "1w"}')
         assert cli.main(["--stale-after", "2d"]) == 0
-        assert fake_backend["stale_after"] == timedelta(days=2)
+        assert fake_backend["stale_after"] == Duration(2, "d")
 
     def test_config_null_disables_nudge(self, fake_backend, isolated_config):
         self._write_config(isolated_config, '{"stale_after": null}')
@@ -253,7 +259,7 @@ class TestStaleThreshold:
             isolated_config, '{"stale_after": "1w", "skip_weekends": true}'
         )
         assert cli.main([]) == 0
-        assert fake_backend["stale_after"] == timedelta(days=5)
+        assert fake_backend["stale_after"] == Duration(5, "d")
 
     def test_flag_week_follows_the_configured_weekend_policy(
         self, fake_backend, isolated_config
@@ -262,7 +268,7 @@ class TestStaleThreshold:
         # out of the same working-week rule.
         self._write_config(isolated_config, '{"skip_weekends": true}')
         assert cli.main(["--stale-after", "1w"]) == 0
-        assert fake_backend["stale_after"] == timedelta(days=5)
+        assert fake_backend["stale_after"] == Duration(5, "d")
         assert fake_backend["skip_weekends"] is True
 
     def test_corrupt_config_keeps_calendar_time(
@@ -381,7 +387,7 @@ _SNOOZE_URL = "https://github.com/acme/widgets/pull/1"
 
 def _entry(oid: str = "cafe", hours: float = 24) -> dict[str, str]:
     """A store entry expiring ``hours`` from now."""
-    return make_entry(oid, datetime.now(UTC), timedelta(hours=hours))
+    return make_entry(oid, datetime.now(UTC) + timedelta(hours=hours))
 
 
 class TestSnoozeFiltering:
@@ -404,7 +410,7 @@ class TestSnoozeFiltering:
         save_snoozes(
             {
                 _SNOOZE_URL: make_entry(
-                    "cafe", datetime.now(UTC), timedelta(hours=24), ["review"]
+                    "cafe", datetime.now(UTC) + timedelta(hours=24), ["review"]
                 )
             }
         )
@@ -423,7 +429,7 @@ class TestSnoozeFiltering:
         save_snoozes(
             {
                 _SNOOZE_URL: make_entry(
-                    "cafe", datetime.now(UTC), timedelta(hours=24), ["review"]
+                    "cafe", datetime.now(UTC) + timedelta(hours=24), ["review"]
                 )
             }
         )
@@ -672,19 +678,38 @@ class TestSnoozeActions:
         assert entry["oid"] == "cafe123"
         assert "Snoozed" in capsys.readouterr().out
 
-    def test_snooze_defaults_to_24h_window(self, monkeypatch):
+    def test_snooze_defaults_to_the_next_morning(self, monkeypatch):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
         assert cli.main(["snooze", _SNOOZE_URL]) == 0
         until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
-        remaining = until - datetime.now(UTC)
-        assert timedelta(hours=23) < remaining <= timedelta(hours=24)
+        assert until == _local_midnight(add_days(date.today(), 1))
 
     def test_snooze_for_custom_duration(self, monkeypatch):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
         assert cli.main(["snooze", _SNOOZE_URL, "--for", "3d"]) == 0
         until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
+        assert until == _local_midnight(add_days(date.today(), 3))
+
+    def test_snooze_for_hours_is_an_exact_span(self, monkeypatch):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        assert cli.main(["snooze", _SNOOZE_URL, "--for", "24h"]) == 0
+        until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
         remaining = until - datetime.now(UTC)
-        assert timedelta(days=2, hours=23) < remaining <= timedelta(days=3)
+        assert timedelta(hours=23) < remaining <= timedelta(hours=24)
+
+    def test_snooze_follows_the_configured_weekend_policy(
+        self, monkeypatch, isolated_config
+    ):
+        # Under skip_weekends a day counts working days and a 'w' is five.
+        path = isolated_config / "gh-prs" / "config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"skip_weekends": true}', encoding="utf-8")
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        for text, days in (("1d", 1), ("1w", 5)):
+            assert cli.main(["snooze", _SNOOZE_URL, "--for", text]) == 0
+            until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
+            expected = add_days(date.today(), days, skip_weekends=True)
+            assert until == _local_midnight(expected)
 
     def test_snooze_invalid_duration_errors_before_lookup(self, monkeypatch, capsys):
         def boom(url):

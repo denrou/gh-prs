@@ -12,16 +12,17 @@ review and the 'stale-draft' nudge on authored drafts; a third lists the
 review requests to silence for good (see ``mute.py``):
 
     {"stale_after": "3d",      # the silence threshold; null disables both nudges
-     "skip_weekends": false,   # true: count working time only, not calendar time
+     "skip_weekends": false,   # true: count working days only, not calendar days
      "mute": [                 # hide these authors' PRs from the attention view…
        {"author": "centreon-renovate", "unless_labels": ["S-Python"]}
      ]}                        # …except the ones carrying an exempting label
 
 ``skip_weekends`` stops the clock on Saturdays and Sundays, so a PR pushed on
-Friday is not nudged on Monday for a weekend nobody was working. It also
-makes a ``w`` five days rather than seven (``week_days`` below), which keeps
-``"1w"`` a same-weekday anniversary: a Thursday PR is nudged the following
-Thursday, not the Monday after.
+Friday is not nudged on Monday for a weekend nobody was working, and a PR
+snoozed for a day on Friday comes back on Monday. It also makes a ``w`` five
+days rather than seven (``week_days`` below), which keeps ``"1w"`` a
+same-weekday anniversary: a Thursday PR is nudged the following Thursday, not
+the Monday after.
 
 Only the view path reads this file, and it degrades to defaults (with a
 warning) on any error — the tool never writes it, so there is nothing to
@@ -31,9 +32,9 @@ clobber.
 import json
 import os
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 
+from gh_prs.duration import Duration
 from gh_prs.gh import DEFAULT_STALE_AFTER
 from gh_prs.mute import MuteRule
 from gh_prs.snooze import CALENDAR_WEEK_DAYS, SnoozeError, parse_duration
@@ -53,9 +54,9 @@ class ConfigError(Exception):
 class Config:
     # Silence threshold for the 'stale' and 'stale-draft' nudges; None
     # disables both entirely.
-    stale_after: timedelta | None = DEFAULT_STALE_AFTER
-    # Measure that threshold in working time, skipping Saturdays and Sundays
-    # in the machine's local timezone.
+    stale_after: Duration | None = DEFAULT_STALE_AFTER
+    # Skip Saturdays and Sundays (in the machine's local timezone) when
+    # counting that threshold and snooze windows.
     skip_weekends: bool = False
     # Review requests to hide from the attention view, in file order. Empty
     # by default: nothing is ever muted unless the user asked for it.
@@ -65,9 +66,8 @@ class Config:
 def week_days(skip_weekends: bool) -> int:
     """Days a 'w' stands for under the given weekend policy.
 
-    Shared by the config file and the ``--stale-after`` flag so both read a
-    duration the same way; the snooze store keeps calendar weeks (a snooze
-    hides a PR, so stretching its window would only delay resurfacing).
+    Shared by the config file, the ``--stale-after`` flag and ``snooze
+    --for`` so all three read a duration the same way.
     """
     return WORKING_WEEK_DAYS if skip_weekends else CALENDAR_WEEK_DAYS
 
@@ -109,7 +109,7 @@ def load_config(path: Path | None = None) -> Config:
 
 
 def _parse_skip_weekends(data: dict, path: Path) -> bool:
-    """Read the ``skip_weekends`` setting: absent → False (calendar time)."""
+    """Read the ``skip_weekends`` setting: absent → False (calendar days)."""
     if "skip_weekends" not in data:
         return False
     value = data["skip_weekends"]
@@ -120,7 +120,7 @@ def _parse_skip_weekends(data: dict, path: Path) -> bool:
     return value
 
 
-def _parse_stale_after(data: dict, path: Path, skip_weekends: bool) -> timedelta | None:
+def _parse_stale_after(data: dict, path: Path, skip_weekends: bool) -> Duration | None:
     """Read the ``stale_after`` setting: absent → default, null → disabled.
 
     ``skip_weekends`` only sets how long a ``w`` is (see ``week_days``); the

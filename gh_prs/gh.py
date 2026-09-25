@@ -10,6 +10,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
+from gh_prs.duration import Duration
+
 
 class GhError(RuntimeError):
     """A gh CLI invocation failed (missing binary, auth, network, bad output)."""
@@ -18,7 +20,7 @@ class GhError(RuntimeError):
 # Default silence before an authored PR is flagged 'stale' (still awaiting
 # review — a nudge to ping the reviewers) or 'stale-draft' (still a draft — a
 # nudge to finish it or mark it ready). Overridable via config / CLI.
-DEFAULT_STALE_AFTER = timedelta(days=3)
+DEFAULT_STALE_AFTER = Duration(3, "d")
 
 # Weekday arithmetic for the skip-weekends staleness clock: a Monday to
 # anchor the week, and the weekday index Saturday falls on.
@@ -641,7 +643,7 @@ def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
 def fetch_prs(
     qualifiers: list[str] | None = None,
     on_warning: Callable[[str], None] | None = None,
-    stale_after: timedelta | None = DEFAULT_STALE_AFTER,
+    stale_after: Duration | None = DEFAULT_STALE_AFTER,
     skip_weekends: bool = False,
 ) -> list[PullRequest]:
     """Fetch open PRs the current user is involved with, fully enriched.
@@ -659,7 +661,7 @@ def fetch_prs(
     ``stale_after`` is the silence threshold for the 'stale' nudge on
     authored PRs still awaiting review and the 'stale-draft' nudge on
     authored drafts; ``None`` disables both reasons. ``skip_weekends``
-    measures that threshold in working time, not calendar time.
+    leaves Saturdays and Sundays out of that threshold (see ``_is_stale``).
 
     ``on_warning`` (if given) receives a message when a search matched more
     PRs than the cap, when a PR matched by ``reviewed-by`` carries no
@@ -813,7 +815,7 @@ def _working_elapsed(start: datetime, end: datetime) -> timedelta:
 def _is_stale(
     updated_at: str,
     now: datetime,
-    stale_after: timedelta,
+    stale_after: Duration,
     skip_weekends: bool = False,
 ) -> bool:
     """True when ``updated_at`` is older than ``stale_after`` relative to ``now``.
@@ -825,11 +827,18 @@ def _is_stale(
     possibly-fresh PR and cry wolf, so uncertainty stays quiet here rather
     than showing. ``now`` must be timezone-aware.
 
-    With ``skip_weekends``, the clock stops on Saturdays and Sundays (see
-    ``_working_elapsed``), so the threshold measures working time: a PR
-    pushed on Friday afternoon is not nudged on Monday morning for a weekend
-    nobody spent reviewing. That can only ever move the nudge later, so it
-    keeps the same quiet direction as the rest of this function.
+    A threshold in days is counted on the local calendar (see
+    ``Duration.until``): a PR updated on Monday afternoon is three days old
+    from Thursday 00:00, so the day's nudges are all there on the first look
+    of the morning instead of trickling in by the hour. That brings the nudge
+    forward by up to a day compared with a 72-hour span — the one place this
+    function leans toward nudging, accepted because it is bounded and is how
+    a person counts days. A threshold in hours stays an exact span.
+
+    With ``skip_weekends``, Saturdays and Sundays do not count: days are
+    counted in working days, and hours on a clock that stops over the
+    weekend (see ``_working_elapsed``). A PR pushed on Friday afternoon is
+    not nudged on Monday morning for a weekend nobody spent reviewing.
     """
     try:
         updated = datetime.fromisoformat(updated_at)
@@ -837,8 +846,10 @@ def _is_stale(
         return False
     if updated.tzinfo is None:
         return False
+    if stale_after.unit == "d":
+        return now >= stale_after.until(updated, skip_weekends)
     elapsed = _working_elapsed(updated, now) if skip_weekends else now - updated
-    return elapsed >= stale_after
+    return elapsed >= timedelta(hours=stale_after.amount)
 
 
 def _changes_requested_addressed(pr: PullRequest) -> bool:
@@ -892,7 +903,7 @@ def _awaiting_review(pr: PullRequest) -> bool:
 def _attention_reasons(
     pr: PullRequest,
     now: datetime | None = None,
-    stale_after: timedelta | None = None,
+    stale_after: Duration | None = None,
     skip_weekends: bool = False,
 ) -> set[str]:
     """Compute why an enriched PR needs the current user's attention.
@@ -903,7 +914,7 @@ def _attention_reasons(
     'stale-draft' nudges only fire when both ``now`` and ``stale_after`` are
     supplied; omitting either disables them (so a bare
     ``_attention_reasons(pr)`` never returns either). ``skip_weekends``
-    measures the threshold in working time (see ``_is_stale``).
+    leaves Saturdays and Sundays out of the threshold (see ``_is_stale``).
     """
     if pr.is_draft:
         # A draft is deliberately parked WIP: review, new-commits, ci-failed

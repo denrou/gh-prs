@@ -1,7 +1,7 @@
 """Local per-PR snooze store: hide a PR from the attention view for a while.
 
-A snooze records the PR's head commit oid, an expiry timestamp (24h by
-default), and — when known — the attention reasons it had at snooze time.
+A snooze records the PR's head commit oid, an expiry timestamp (the next
+morning by default: local midnight, see ``duration``), and — when known — the attention reasons it had at snooze time.
 The PR stays hidden from the default (attention) view only while ALL hold:
 the head still matches, the window has not elapsed, and its attention
 reasons are unchanged. As soon as any breaks — new commits, a rebase, the
@@ -22,10 +22,11 @@ consults it; explicit views (``-c``/``-r``/``-a``), their fast counts, and
 import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+from gh_prs.duration import Duration
 from gh_prs.gh import PullRequest
 
 
@@ -53,12 +54,14 @@ class SnoozeEntry(TypedDict):
 _PR_URL = re.compile(r"^(https://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+)(?=$|[/?#])")
 
 _DURATION = re.compile(r"^(\d+)\s*([hdw])$")
-# 'w' is handled separately (its length is a caller's choice, see
-# parse_duration); these two units are fixed.
-_DURATION_UNITS = {"h": "hours", "d": "days"}
 
 # Days a 'w' stands for by default: a calendar week.
 CALENDAR_WEEK_DAYS = 7
+
+# The longest duration accepted, about a century: far beyond any real use,
+# and far enough from datetime's year-9999 ceiling that turning a duration
+# into a timestamp can never overflow.
+_MAX_DAYS = 36_500
 
 
 def snooze_path() -> Path:
@@ -66,22 +69,23 @@ def snooze_path() -> Path:
     return Path(config_home) / "gh-prs" / "snooze.json"
 
 
-def parse_duration(text: str, *, week_days: int = CALENDAR_WEEK_DAYS) -> timedelta:
-    """Parse a snooze duration like ``12h``, ``3d``, or ``1w``.
+def parse_duration(text: str, *, week_days: int = CALENDAR_WEEK_DAYS) -> Duration:
+    """Parse a duration like ``12h``, ``3d``, or ``1w``.
 
-    ``week_days`` is how many days a ``w`` stands for — seven by default.
-    Callers measuring working time (the staleness threshold with weekends
-    skipped) pass five, so ``1w`` stays a same-weekday anniversary instead of
-    stretching to seven working days. Only the unit's length changes here;
-    which time counts is the caller's business.
+    Hours stay hours; days and weeks become whole days, which callers count
+    on the calendar (see ``duration``). ``week_days`` is how many days a
+    ``w`` stands for — seven by default. Callers counting working days (with
+    weekends skipped) pass five, so ``1w`` stays a same-weekday anniversary
+    instead of stretching to seven working days. Only the unit's length
+    changes here; which days count is the caller's business.
 
     Raises ``SnoozeError`` on anything else — malformed input, zero (a snooze
-    that never hides anything is a typo, not a request), and durations too
-    large to represent. A value with enough digits overflows ``timedelta``
-    (``OverflowError``) or trips CPython's int-string conversion limit
-    (``ValueError``); both are converted here so every caller sees the one
-    error type it already handles and a bad duration can never escape as an
-    uncaught crash — same fail-safe direction as the rest of the store.
+    that never hides anything is a typo, not a request), and durations longer
+    than ``_MAX_DAYS``. A value with enough digits trips CPython's int-string
+    conversion limit (``ValueError``); that is converted here too, so every
+    caller sees the one error type it already handles and a bad duration can
+    never escape as an uncaught crash — same fail-safe direction as the rest
+    of the store.
     """
     msg = f"invalid duration {text!r} (use a positive number of hours, days, or weeks: e.g. 12h, 3d, 1w)"
     match = _DURATION.match(text.strip().lower())
@@ -90,13 +94,14 @@ def parse_duration(text: str, *, week_days: int = CALENDAR_WEEK_DAYS) -> timedel
     amount, unit = match.groups()
     try:
         value = int(amount)
-        if not value:
-            raise SnoozeError(msg)
-        if unit == "w":
-            return timedelta(days=value * week_days)
-        return timedelta(**{_DURATION_UNITS[unit]: value})
-    except (ValueError, OverflowError) as e:
+    except ValueError as e:
         raise SnoozeError(msg) from e
+    if unit == "w":
+        value, unit = value * week_days, "d"
+    limit = _MAX_DAYS * 24 if unit == "h" else _MAX_DAYS
+    if not 0 < value <= limit:
+        raise SnoozeError(msg)
+    return Duration(value, unit)
 
 
 def normalize_pr_url(ref: str) -> str:
@@ -183,11 +188,13 @@ def save_snoozes(snoozes: dict[str, SnoozeEntry], path: Path | None = None) -> N
 
 def make_entry(
     oid: str,
-    now: datetime,
-    duration: timedelta,
+    until: datetime,
     reasons: list[str] | None = None,
 ) -> SnoozeEntry:
-    """Build a store entry hiding ``oid`` until ``now + duration``.
+    """Build a store entry hiding ``oid`` until ``until``.
+
+    ``until`` comes from ``Duration.until``, so a day-based snooze already
+    lands on the morning it was meant for.
 
     ``reasons`` (the PR's attention reasons at snooze time) is stored sorted
     so a later set-equality check is order-independent; ``None`` omits the
@@ -195,7 +202,7 @@ def make_entry(
     """
     entry: SnoozeEntry = {
         "oid": oid,
-        "until": (now + duration).isoformat(timespec="seconds"),
+        "until": until.isoformat(timespec="seconds"),
     }
     if reasons is not None:
         entry["reasons"] = sorted(reasons)

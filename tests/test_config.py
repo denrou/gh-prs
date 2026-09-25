@@ -1,8 +1,8 @@
 """Tests for gh_prs.config: loading user settings and their fail-safe defaults."""
 
-from datetime import timedelta
-
 import pytest
+
+from gh_prs.duration import Duration
 
 from gh_prs.config import Config, ConfigError, config_path, load_config, week_days
 from gh_prs.gh import DEFAULT_STALE_AFTER
@@ -33,7 +33,7 @@ class TestLoadConfig:
     def test_valid_duration_is_parsed(self, tmp_path):
         path = tmp_path / "config.json"
         path.write_text('{"stale_after": "1w"}', encoding="utf-8")
-        assert load_config(path).stale_after == timedelta(weeks=1)
+        assert load_config(path).stale_after == Duration(7, "d")
 
     def test_null_disables_the_nudge(self, tmp_path):
         path = tmp_path / "config.json"
@@ -57,7 +57,7 @@ class TestLoadConfig:
         path.write_text(
             '{"stale_after": "1w", "skip_weekends": true}', encoding="utf-8"
         )
-        assert load_config(path).stale_after == timedelta(days=5)
+        assert load_config(path).stale_after == Duration(5, "d")
 
     @pytest.mark.parametrize("value", ['"yes"', "1", "null", "[]"])
     def test_non_boolean_skip_weekends_raises(self, tmp_path, value):
@@ -164,7 +164,7 @@ class TestMuteRules:
             encoding="utf-8",
         )
         config = load_config(path)
-        assert config.stale_after == timedelta(days=5)
+        assert config.stale_after == Duration(5, "d")
         assert config.mute == (MuteRule(author="bot"),)
 
     @pytest.mark.parametrize(

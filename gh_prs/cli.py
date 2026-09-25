@@ -61,7 +61,7 @@ _SECTIONS_WITH_AUTHOR = {"review", "new-commits"}
 _BARE_NUMBER = re.compile(r"^\d+$")
 
 # How long a snooze lasts when --for is not given.
-_DEFAULT_SNOOZE_FOR = "24h"
+_DEFAULT_SNOOZE_FOR = "1d"
 
 # The flags the snooze/unsnooze subcommands replaced, each with the syntax to
 # suggest instead. Checked before argparse runs so the error is a migration
@@ -310,8 +310,15 @@ def _do_snooze(
     the rest are snoozed (partial success exits non-zero). The store is
     written once, only if at least one ref resolved.
     """
-    # Validate the duration up front so a typo fails before any network round-trip.
-    duration = parse_duration(args.snooze_for or _DEFAULT_SNOOZE_FOR)
+    # Validate the duration up front so a typo fails before any network
+    # round-trip. The config's weekend policy decides both how long a 'w' is
+    # and which days a day-based window counts.
+    config = _settings(err)
+    duration = parse_duration(
+        args.snooze_for or _DEFAULT_SNOOZE_FOR,
+        week_days=week_days(config.skip_weekends),
+    )
+    until = duration.until(now, config.skip_weekends)
     resolved: dict[str, str] = {}  # canonical url -> head oid
     failures: list[str] = []
     for ref in args.refs:
@@ -326,9 +333,9 @@ def _do_snooze(
     # lapses when they change — e.g. a review lands and a waiting PR becomes
     # ready to merge — not only when its head moves. Only worth a fetch once
     # at least one ref resolved.
-    reasons_by_url = _attention_reasons_by_url(err, _settings(err)) if resolved else {}
+    reasons_by_url = _attention_reasons_by_url(err, config) if resolved else {}
     for url, oid in resolved.items():
-        snoozes[url] = make_entry(oid, now, duration, reasons_by_url.get(url))
+        snoozes[url] = make_entry(oid, until, reasons_by_url.get(url))
     if resolved:
         save_snoozes(snoozes)
         for url in resolved:
@@ -538,8 +545,9 @@ def main(argv: list[str] | None = None) -> int:
         metavar="DURATION",
         help="flag PRs you created that have gone this long without activity "
         "while still awaiting review or still draft "
-        "(e.g. 3d, 1w; default 3d, overrides config.json; counted in working "
-        "days when config.json sets skip_weekends)",
+        "(e.g. 3d, 1w; default 3d, overrides config.json; days count from "
+        "local midnight, and in working days when config.json sets "
+        "skip_weekends)",
     )
     parser.add_argument(
         "--no-color", action="store_true", help="disable colored output"
@@ -586,8 +594,9 @@ def main(argv: list[str] | None = None) -> int:
         "--for",
         dest="snooze_for",
         metavar="DURATION",
-        help="how long to hide the PRs "
-        f"(e.g. 12h, 3d, 1w; default {_DEFAULT_SNOOZE_FOR})",
+        help="how long to hide the PRs (e.g. 12h, 3d, 1w; days end at local "
+        f"midnight, so the default {_DEFAULT_SNOOZE_FOR} means tomorrow morning; "
+        "counted in working days when config.json sets skip_weekends)",
     )
     unsnooze_cmd = commands.add_parser(
         "unsnooze",
