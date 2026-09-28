@@ -198,7 +198,13 @@ a third silences review requests you never intend to answer:
 {
   "stale_after": "5d",
   "skip_weekends": true,
-  "mute": [{ "author": "centreon-renovate", "unless_labels": ["S-Python"] }]
+  "mute": [
+    {
+      "author": "centreon-renovate",
+      "unless_labels": ["S-Python"],
+      "repos": ["centreon/centreon-pulse"]
+    }
+  ]
 }
 ```
 
@@ -218,17 +224,22 @@ rather than seven, which keeps it a same-weekday anniversary: a Thursday PR is
 nudged the following Thursday, not the Monday after.
 
 `mute` is a list of rules, each naming a PR `author` and, optionally, the
-`unless_labels` that exempt a PR from it. The example reads "hide
-centreon-renovate's PRs unless they carry S-Python" — the shape of a bot
-whose dependency bumps land on your whole team while only one stack is yours.
-Where a snooze silences one PR for a while, a mute rule silences a kind of PR
-for good. Muted PRs drop out of the default view and `--count`; a dim line
-on stderr says how many were withheld, and `gh prs -r` (like `-a` and
-`--json`) still lists them, so nothing disappears without a trace. Logins
-and labels match case-insensitively. Use the author login as GitHub's API
+`unless_labels` that exempt a PR from it and the `repos` (`owner/name`) it
+applies to. The example reads "in centreon-pulse, hide centreon-renovate's
+PRs unless they carry S-Python" — the shape of a bot whose dependency bumps
+land on your whole team while only one stack is yours. Leave `repos` out and
+the rule applies everywhere; list repositories and the same bot stays visible
+in the ones you maintain. `repos` scopes a rule _in_ rather than _out_ on
+purpose: a misspelt repository makes the rule match nothing, so the PRs show
+instead of a repository you meant to keep going quiet. Where a snooze
+silences one PR for a while, a mute rule silences a kind of PR for good.
+Muted PRs drop out of the default view and `--count`; a dim line on stderr
+says how many were withheld, and `gh prs -r` (like `-a` and `--json`) still
+lists them, so nothing disappears without a trace. Logins, labels and
+repositories match case-insensitively. Use the author login as GitHub's API
 reports it — a GitHub App is its slug without the `[bot]` suffix; `gh prs -r
---json` prints the `author` and `labels` the tool sees. Your own PRs are never
-muted, whatever the rules say.
+--json` prints the `author`, `labels` and `repo` the tool sees. Your own PRs
+are never muted, whatever the rules say.
 
 An unreadable or invalid config only warns and falls back to the defaults
 (3-day calendar threshold, no mute rules), so a typo never breaks the tool —

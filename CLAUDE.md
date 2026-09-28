@@ -308,19 +308,36 @@ while only the Python bumps are the viewer's to look at. Rules live in
 `config.json`:
 
 ```json
-"mute": [{"author": "centreon-renovate", "unless_labels": ["S-Python"]}]
+"mute": [
+  {
+    "author": "centreon-renovate",
+    "unless_labels": ["S-Python"],
+    "repos": ["centreon/centreon-pulse"]
+  }
+]
 ```
 
-A rule matches when the PR's author login equals `author` and none of
-`unless_labels` is on the PR (both compared case-folded — GitHub treats
-logins and label names as case-insensitive). `author` is mandatory and
-`unless_labels` optional; any other key is a `ConfigError` (a misspelt
-`unless_label` would otherwise silently make an exempting rule
-unconditional), and one bad rule disables the whole list — a partial rule set
-would hide a different set of PRs than the one the user wrote down. The
-GraphQL login of a GitHub App is its slug without the REST API's `[bot]`
-suffix (`gh prs -r --json` prints `author` and `labels` as the tool sees
-them).
+A rule matches when the PR's author login equals `author`, the PR's
+repository (`nameWithOwner`) is in `repos` when the rule lists any, and none
+of `unless_labels` is on the PR (all compared case-folded — GitHub treats
+logins, repository names and label names as case-insensitive). `author` is
+mandatory, `unless_labels` and `repos` optional; any other key is a
+`ConfigError` (a misspelt `unless_label` would otherwise silently make an
+exempting rule unconditional), a `repos` entry without a `/` is one too (it
+can never equal a `nameWithOwner`, so the rule would silently match nothing),
+and one bad rule disables the whole list — a partial rule set would hide a
+different set of PRs than the one the user wrote down. The GraphQL login of
+a GitHub App is its slug without the REST API's `[bot]` suffix (`gh prs -r
+--json` prints `author`, `labels` and `repo` as the tool sees them).
+
+`repos` scopes a rule _in_ rather than _out_ (no `unless_repos`) because a
+mute hides: a misspelt repository in an allowlist makes the rule match
+nothing and the PRs show, whereas a misspelt exemption would silently hide
+the repository the user maintains. The intended shape for "hide the bot
+everywhere except where I'm the maintainer" is therefore one rule per
+repository (or per group of repositories) where it should be muted. Unlike
+labels, the repository is an identity field and always known, so the check
+needs no completeness evidence.
 
 Muting hides, so it follows the snooze store's fail-safe direction: positive
 evidence only. `from_graphql` reads `labels(first: 20)` (`_LABEL_PAGE_LIMIT`,

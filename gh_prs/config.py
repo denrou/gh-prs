@@ -14,8 +14,10 @@ review requests to silence for good (see ``mute.py``):
     {"stale_after": "3d",      # the silence threshold; null disables both nudges
      "skip_weekends": false,   # true: count working days only, not calendar days
      "mute": [                 # hide these authors' PRs from the attention view…
-       {"author": "centreon-renovate", "unless_labels": ["S-Python"]}
-     ]}                        # …except the ones carrying an exempting label
+       {"author": "centreon-renovate", "unless_labels": ["S-Python"],
+        "repos": ["centreon/centreon-pulse"]}
+     ]}                        # …except the ones carrying an exempting label,
+                               # and only in the listed repositories (absent: all)
 
 ``skip_weekends`` stops the clock on Saturdays and Sundays, so a PR pushed on
 Friday is not nudged on Monday for a weekend nobody was working, and a PR
@@ -145,14 +147,15 @@ def _parse_stale_after(data: dict, path: Path, skip_weekends: bool) -> Duration 
 # The keys a mute rule may carry. Anything else is rejected rather than
 # ignored: a misspelt "unless_label" would otherwise silently turn an
 # exempting rule into an unconditional one.
-_MUTE_RULE_KEYS = frozenset({"author", "unless_labels"})
+_MUTE_RULE_KEYS = frozenset({"author", "unless_labels", "repos"})
 
 
 def _parse_mute(data: dict, path: Path) -> tuple[MuteRule, ...]:
     """Read the ``mute`` list: absent → no rules.
 
-    Each rule is an object with a non-empty ``author`` login and an optional
-    ``unless_labels`` list of non-empty label names. The whole list is
+    Each rule is an object with a non-empty ``author`` login, an optional
+    ``unless_labels`` list of non-empty label names, and an optional ``repos``
+    list of non-empty ``owner/name`` repositories. The whole list is
     validated before any rule is kept, so a bad entry disables muting
     entirely (the caller warns and falls back to defaults) instead of
     applying the rules around it — a partial rule set would hide a
@@ -175,11 +178,27 @@ def _parse_mute(data: dict, path: Path) -> tuple[MuteRule, ...]:
         if not isinstance(author, str) or not author.strip():
             raise ConfigError(f"{where} needs a non-empty 'author' login")
         labels = rule.get("unless_labels", [])
-        if not isinstance(labels, list) or not all(
-            isinstance(label, str) and label.strip() for label in labels
-        ):
+        if not _is_name_list(labels):
             raise ConfigError(
                 f"{where}: 'unless_labels' must be a list of non-empty label names"
             )
-        parsed.append(MuteRule(author=author.strip(), unless_labels=frozenset(labels)))
+        repos = rule.get("repos", [])
+        if not _is_name_list(repos) or not all("/" in repo for repo in repos):
+            raise ConfigError(
+                f"{where}: 'repos' must be a list of non-empty 'owner/name' repositories"
+            )
+        parsed.append(
+            MuteRule(
+                author=author.strip(),
+                unless_labels=frozenset(labels),
+                repos=frozenset(repo.strip() for repo in repos),
+            )
+        )
     return tuple(parsed)
+
+
+def _is_name_list(value: object) -> bool:
+    """Whether ``value`` is a list of non-blank strings (an empty list is)."""
+    return isinstance(value, list) and all(
+        isinstance(item, str) and item.strip() for item in value
+    )

@@ -157,6 +157,31 @@ class TestMuteRules:
             == "renovate"
         )
 
+    def test_rule_scoped_to_repos(self, tmp_path):
+        body = (
+            '[{"author": "renovate", "unless_labels": ["S-Python"],'
+            ' "repos": ["centreon/centreon-pulse", " acme/widgets "]}]'
+        )
+        assert self._load(tmp_path, body).mute == (
+            MuteRule(
+                author="renovate",
+                unless_labels=frozenset({"S-Python"}),
+                repos=frozenset({"centreon/centreon-pulse", "acme/widgets"}),
+            ),
+        )
+
+    def test_absent_repos_means_every_repository(self, tmp_path):
+        assert (
+            self._load(tmp_path, '[{"author": "renovate"}]').mute[0].repos
+            == frozenset()
+        )
+
+    def test_repos_alone_scopes_an_unconditional_rule(self, tmp_path):
+        body = '[{"author": "renovate", "repos": ["acme/widgets"]}]'
+        assert self._load(tmp_path, body).mute == (
+            MuteRule(author="renovate", repos=frozenset({"acme/widgets"})),
+        )
+
     def test_rules_coexist_with_the_staleness_settings(self, tmp_path):
         path = tmp_path / "config.json"
         path.write_text(
@@ -199,6 +224,24 @@ class TestMuteRules:
     def test_malformed_unless_labels_raises(self, tmp_path, labels):
         body = f'[{{"author": "renovate", "unless_labels": {labels}}}]'
         with pytest.raises(ConfigError, match="'unless_labels' must be a list"):
+            self._load(tmp_path, body)
+
+    @pytest.mark.parametrize(
+        "repos",
+        [
+            '"acme/widgets"',
+            "null",
+            "[1]",
+            '[""]',
+            '["acme/widgets", null]',
+            '["widgets"]',
+        ],
+    )
+    def test_malformed_repos_raises(self, tmp_path, repos):
+        # A bare "widgets" can never equal a nameWithOwner, so the rule would
+        # silently match nothing; name the mistake instead.
+        body = f'[{{"author": "renovate", "repos": {repos}}}]'
+        with pytest.raises(ConfigError, match="'repos' must be a list"):
             self._load(tmp_path, body)
 
     def test_unknown_key_raises(self, tmp_path):

@@ -25,15 +25,26 @@ RENOVATE = MuteRule(author="renovate")
 RENOVATE_UNLESS_PYTHON = MuteRule(
     author="renovate", unless_labels=frozenset({"S-Python"})
 )
+RENOVATE_IN_WIDGETS = MuteRule(
+    author="renovate",
+    unless_labels=frozenset({"S-Python"}),
+    repos=frozenset({"acme/widgets"}),
+)
 
 
 class TestMuteRule:
     def test_normalizes_case_once(self):
         rule = MuteRule(
-            author="Centreon-Renovate", unless_labels=frozenset({"S-Python"})
+            author="Centreon-Renovate",
+            unless_labels=frozenset({"S-Python"}),
+            repos=frozenset({"Centreon/Centreon-Pulse"}),
         )
         assert rule.author == "centreon-renovate"
         assert rule.unless_labels == frozenset({"s-python"})
+        assert rule.repos == frozenset({"centreon/centreon-pulse"})
+
+    def test_defaults_to_every_repository(self):
+        assert MuteRule(author="renovate").repos == frozenset()
 
 
 class TestIsMuted:
@@ -94,6 +105,44 @@ class TestIsMuted:
         # author is a config smell, not something to reconcile here.
         pr = _pr(labels=("S-Python",))
         assert is_muted(pr, (RENOVATE_UNLESS_PYTHON, RENOVATE))
+
+    def test_repo_scoped_rule_mutes_inside_its_repos(self):
+        assert is_muted(_pr(), (RENOVATE_IN_WIDGETS,))
+
+    def test_repo_scoped_rule_leaves_other_repos_visible(self):
+        # The same bot's bumps in a repository the viewer maintains stay in
+        # the view, exempting label or not.
+        pr = _pr(repo="acme/gadgets", url="https://github.com/acme/gadgets/pull/1")
+        assert not is_muted(pr, (RENOVATE_IN_WIDGETS,))
+
+    def test_repo_match_is_case_insensitive(self):
+        assert is_muted(_pr(repo="Acme/Widgets"), (RENOVATE_IN_WIDGETS,))
+
+    def test_repo_scoped_rule_still_honours_the_exempting_label(self):
+        assert not is_muted(_pr(labels=("S-Python",)), (RENOVATE_IN_WIDGETS,))
+
+    def test_repo_scoped_rule_without_labels_mutes_on_author_and_repo(self):
+        rule = MuteRule(author="renovate", repos=frozenset({"acme/widgets"}))
+        assert is_muted(_pr(labels_complete=False), (rule,))
+        assert not is_muted(_pr(repo="acme/gadgets"), (rule,))
+
+    def test_unscoped_rule_applies_everywhere(self):
+        assert is_muted(_pr(repo="acme/gadgets"), (RENOVATE,))
+
+    def test_rules_scoped_to_different_repos_are_independent(self):
+        # One rule per repository is the intended shape: each scopes itself
+        # in, so a PR is muted only where some rule names its repository.
+        in_widgets = MuteRule(author="renovate", repos=frozenset({"acme/widgets"}))
+        in_gadgets = MuteRule(
+            author="renovate",
+            unless_labels=frozenset({"S-Python"}),
+            repos=frozenset({"acme/gadgets"}),
+        )
+        rules = (in_widgets, in_gadgets)
+        assert is_muted(_pr(labels=("S-Python",)), rules)
+        assert not is_muted(_pr(repo="acme/gadgets", labels=("S-Python",)), rules)
+        assert is_muted(_pr(repo="acme/gadgets", labels=("S-Helm",)), rules)
+        assert not is_muted(_pr(repo="acme/tools"), rules)
 
 
 class TestSplitMuted:
