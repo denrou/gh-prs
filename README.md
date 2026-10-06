@@ -113,6 +113,11 @@ gh prs snooze 12 34 --for 3d  # …several at once, for a custom window (12h, 3d
 gh prs unsnooze 123         # remove a PR's snooze
 gh prs snooze               # with no arguments: list snoozed PRs
 
+gh prs hide 123             # hide a PR for good (a teammate has the review covered)
+gh prs unhide 123           # bring it back
+gh prs hide                 # with no arguments: list hidden PRs
+gh prs hide --prune         # forget hidden PRs that are closed or merged
+
 gh prs merge 123            # approve (if it isn't yours) and squash-merge a PR
 gh prs merge 12 34 -R o/r   # …several, in order, in another repo
 gh prs merge 123 --auto     # …or enable auto-merge and let GitHub finish
@@ -153,6 +158,25 @@ and exact counts are unaffected.
 
 Snoozes are stored locally in `~/.config/gh-prs/snooze.json` (honors
 `$XDG_CONFIG_HOME`); they never touch the PR on GitHub.
+
+### Hiding
+
+A snooze acknowledges one state of a PR for a while; sometimes the decision
+is final — you were requested on a PR a teammate is already reviewing, and
+every push would otherwise bring it back. `gh prs hide <pr>...` takes it
+out of the attention view until you say otherwise: new commits, a rebase, a
+review landing, nothing on the PR side lifts a hide. `gh prs unhide <pr>...`
+brings it back, `gh prs hide` with no arguments lists what's hidden, and
+`gh prs hide --prune` forgets the hidden PRs that have since been closed or
+merged (they never show anyway, so this is housekeeping, not a chore).
+PR references work exactly as for snoozing.
+
+Hiding is the one place the tool takes your word over the PR's state, so
+keep it for PRs you have decided are not yours to act on: a hidden PR stays
+hidden even if someone re-requests your review. As with snoozes, the
+attention view says how many hidden PRs it withheld, and explicit views,
+their counts, and `--json` are unaffected. The store is
+`~/.config/gh-prs/hidden.json`.
 
 ### Merging
 

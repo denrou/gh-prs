@@ -9,6 +9,7 @@ uv run gh-prs               # Run the CLI (default: PRs needing attention)
 uv run gh-prs -c            # PRs you created
 uv run gh-prs -r            # PRs awaiting your review
 uv run gh-prs merge 123     # Approve (if allowed) and squash-merge a PR — writes to GitHub
+uv run gh-prs hide 123      # Hide a PR from the attention view until unhidden
 uv run pytest               # Run tests
 uv run ruff check .         # Lint
 uv run ruff format .        # Format
@@ -49,7 +50,7 @@ project does not want.
 
 ## Architecture
 
-Seven-module design inside `gh_prs/`:
+Nine-module design inside `gh_prs/`:
 
 - **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
   existing `gh auth` session. Exposes a `PullRequest` dataclass plus
@@ -67,9 +68,17 @@ Seven-module design inside `gh_prs/`:
   (`amount` + `unit`, `"h"` or `"d"`) that `parse_duration` returns, its
   `until()` deadline, and `add_days()`, the working-day step. No I/O;
   imported by `gh.py`, `snooze.py`, and `config.py` alike.
+- **`store.py`** — JSON file I/O shared by the machine-managed stores:
+  `store_path()`, `read_json()` (missing file → `None`, every other failure
+  raised as the caller's error type), `write_json()` (write-then-rename).
+  Shape validation stays with each store.
 - **`snooze.py`** — Local per-PR snooze store (`{PR url: {oid, until}}` JSON
-  at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Pure I/O + partitioning helpers;
-  no `gh` calls. Raises `SnoozeError`.
+  at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Partitioning helpers over
+  `store.py`; no `gh` calls. Raises `SnoozeError`.
+- **`hide.py`** — Local per-PR hide store (`{PR url: {since}}` JSON at
+  `$XDG_CONFIG_HOME/gh-prs/hidden.json`): the user's standing decision that
+  a PR is not theirs, lifted only by `unhide`. Same shape as `snooze.py`;
+  raises `HideError`.
 - **`config.py`** — Human-authored settings (`{stale_after, skip_weekends,
 mute}` JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from
   the machine-managed snooze store so a hand-edit can't corrupt snooze state.
@@ -352,8 +361,8 @@ actionable ones and mute rules are about other people's review requests.
 
 Application mirrors snoozing: only the attention view (table and `--count`)
 consults the rules; `-c`/`-r`/`-a` and `--json` stay exact. `split_muted`
-runs _before_ `split_snoozed`, so a lingering snooze on a now-muted PR does
-not inflate the "snoozed hidden" line, and the view prints a dim
+runs _before_ `split_hidden` and `split_snoozed`, so a lingering snooze on a
+now-muted PR does not inflate the "snoozed hidden" line, and the view prints a dim
 "N PR(s) muted by config" on stderr counting only muted PRs that would have
 needed attention. The rules ride on the same `_settings` read as the
 staleness settings, so a broken config warns once and yields no rules —
@@ -406,6 +415,45 @@ both forms now hard-error. References resolve independently: a bad or
 not-snoozed one is reported to stderr and skipped while the rest are
 applied, the store is written once, and a partial batch exits non-zero —
 never clobbering the file.
+
+### Hiding (`hide.py`, applied in `cli.py`)
+
+`gh prs hide <pr>...` records the PR's URL and a `since` timestamp — nothing
+else — and the default attention view (table and `--count`) withholds the
+PR until `gh prs unhide <pr>...`. It exists for the case neither snoozing
+nor muting covers: a review requested from the viewer _personally_ (so the
+**review** reason keeps firing even once the PR is approved) that a teammate
+is already handling. A snooze is pinned to the head oid and the reason set,
+so every push resurfaces it; a mute rule is about an author, not one PR.
+Where every other hide in the tool demands positive evidence from the PR, a
+hide is the user's word alone, which is why it must be explicit and per-PR:
+no head, no reasons, no expiry, and no PR-side event lifts it — including a
+re-request of the viewer's review, since `reviewRequests` carries no
+timestamp that could tell a fresh request from the one the user already
+dismissed. The limitation is documented rather than guessed around.
+
+Application order in the view is mute → hide → snooze, so a lingering
+snooze on a hidden PR neither inflates the "snoozed hidden" line nor gets
+pruned (the view never writes the hide store). The view prints a dim
+"N hidden PR(s) withheld" on stderr counting only PRs that would have needed
+attention; explicit views (`-c`/`-r`/`-a`), fast counts, and `--json` never
+consult the store. A corrupt store warns and hides nothing on the view path
+but is fatal for the subcommands (same reasoning as snoozes: never clobber
+the file, never render a half-parsed store).
+
+A hide has no expiry, so entries for closed or merged PRs would accumulate.
+They are harmless — the searches only return open PRs — so cleanup is the
+explicit, network-bound `gh prs hide --prune`, which looks each entry up
+with `fetch_pr()` and drops it only on positive evidence that the PR is no
+longer `OPEN`; a lookup failure or an unknown state keeps the entry and is
+reported. The view path pays nothing for it. `--prune` with PR arguments is
+rejected (like `snooze --for` without refs: a forgotten intent, not a
+request). Subcommand conventions follow snoozing exactly: bare `gh prs hide`
+lists the store, references are a bare number scoped by `-R`/the current
+repository or a full URL canonicalized offline (so `hide <url>` and
+`unhide <url>` need no network), references resolve independently with a
+partial batch exiting non-zero, and hiding an already hidden PR is a no-op
+that keeps the original `since` rather than an error.
 
 ### Merging (`merge.py`, `gh.py`, applied in `cli.py`)
 

@@ -19,8 +19,6 @@ consults it; explicit views (``-c``/``-r``/``-a``), their fast counts, and
 ``--json`` never do, so their numbers stay exact.
 """
 
-import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +26,7 @@ from typing import NotRequired, TypedDict
 
 from gh_prs.duration import Duration
 from gh_prs.gh import PullRequest
+from gh_prs.store import read_json, store_path, write_json
 
 
 class SnoozeError(Exception):
@@ -65,8 +64,7 @@ _MAX_DAYS = 36_500
 
 
 def snooze_path() -> Path:
-    config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(config_home) / "gh-prs" / "snooze.json"
+    return store_path("snooze.json")
 
 
 def parse_duration(text: str, *, week_days: int = CALENDAR_WEEK_DAYS) -> Duration:
@@ -139,20 +137,9 @@ def load_snoozes(path: Path | None = None) -> dict[str, SnoozeEntry]:
     view shows more, never less).
     """
     path = path or snooze_path()
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    data = read_json(path, SnoozeError)
+    if data is None:
         return {}
-    except UnicodeDecodeError as e:
-        # Not an OSError: without this clause a corrupt (e.g. truncated)
-        # file would crash the caller instead of degrading.
-        raise SnoozeError(f"{path} is not valid UTF-8: {e}") from e
-    except OSError as e:
-        raise SnoozeError(f"cannot read {path}: {e}") from e
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise SnoozeError(f"{path} is not valid JSON: {e}") from e
     if not isinstance(data, dict) or not all(
         isinstance(k, str)
         and isinstance(v, dict)
@@ -172,18 +159,7 @@ def save_snoozes(snoozes: dict[str, SnoozeEntry], path: Path | None = None) -> N
 
     Raises ``SnoozeError`` on any I/O failure.
     """
-    path = path or snooze_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Write-then-rename so a crash mid-write can't leave a truncated
-        # store (which would then read as corrupt).
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(
-            json.dumps(snoozes, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        os.replace(tmp, path)
-    except OSError as e:
-        raise SnoozeError(f"cannot write {path}: {e}") from e
+    write_json(path or snooze_path(), snoozes, SnoozeError)
 
 
 def make_entry(

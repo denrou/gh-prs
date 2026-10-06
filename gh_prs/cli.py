@@ -25,6 +25,14 @@ from gh_prs.gh import (
     merge_pr,
     resolve_pr,
 )
+from gh_prs.hide import (
+    HideEntry,
+    HideError,
+    load_hidden,
+    save_hidden,
+    split_hidden,
+)
+from gh_prs.hide import make_entry as make_hide_entry
 from gh_prs.merge import merge_blockers, should_approve
 from gh_prs.mute import split_muted
 from gh_prs.snooze import (
@@ -424,6 +432,148 @@ def _run_snooze_command(
         return 130
 
 
+def _do_hide(
+    args: argparse.Namespace,
+    hidden: dict[str, HideEntry],
+    now: datetime,
+    console: Console,
+    err: Console,
+) -> int:
+    """Hide every PR in ``args.refs``; return the exit code.
+
+    Refs are resolved independently, as for snoozing: a bad one is reported
+    and skipped while the rest are hidden (partial success exits non-zero).
+    Hiding an already hidden PR is a no-op, not an error — the decision
+    stands either way, and the original ``since`` is kept. The store is
+    written once, only if something changed.
+    """
+    added: list[str] = []
+    failures: list[str] = []
+    for ref in args.refs:
+        try:
+            with err.status(f"Looking up {escape(ref)}…", spinner="dots"):
+                url = _ref_to_url(ref, args.repo)
+        except (SnoozeError, GhError) as exc:
+            failures.append(f"{ref}: {exc}")
+            continue
+        if url in hidden:
+            console.print(f"{escape(url)} [dim](already hidden)[/dim]")
+        else:
+            hidden[url] = make_hide_entry(now)
+            added.append(url)
+    if added:
+        save_hidden(hidden)
+        for url in added:
+            console.print(
+                f"Hidden {escape(url)} [dim](until 'gh prs unhide', "
+                "whatever happens to the PR)[/dim]"
+            )
+    for failure in failures:
+        err.print(f"[red]Error:[/red] {escape(failure)}")
+    return 1 if failures else 0
+
+
+def _do_unhide(
+    args: argparse.Namespace,
+    hidden: dict[str, HideEntry],
+    console: Console,
+    err: Console,
+) -> int:
+    """Unhide every PR in ``args.refs``; return the exit code.
+
+    Same independent handling as unsnoozing: a bad or not-hidden ref is
+    reported and skipped, and the store is written once if anything changed.
+    """
+    removed: list[str] = []
+    failures: list[str] = []
+    for ref in args.refs:
+        try:
+            url = _ref_to_url(ref, args.repo)
+        except (SnoozeError, GhError) as exc:
+            failures.append(f"{ref}: {exc}")
+            continue
+        if hidden.pop(url, None) is None:
+            failures.append(f"{ref} ({url}) is not hidden")
+        else:
+            removed.append(url)
+    if removed:
+        save_hidden(hidden)
+        for url in removed:
+            console.print(f"Unhidden {escape(url)}")
+    for failure in failures:
+        err.print(f"[red]Error:[/red] {escape(failure)}")
+    return 1 if failures else 0
+
+
+def _prune_hidden(hidden: dict[str, HideEntry], console: Console, err: Console) -> int:
+    """Drop the entries of hidden PRs that are no longer open (``hide --prune``).
+
+    A hide has no expiry, so closed and merged PRs would accumulate in the
+    store forever; they never show anyway (the searches only return open
+    PRs), so the clean-up is an explicit, network-bound command rather than
+    something the view path pays for. Each entry is looked up on its own;
+    one that cannot be inspected is kept and reported — an entry may only
+    be dropped on positive evidence that its PR is gone.
+    """
+    pruned: list[str] = []
+    failures: list[str] = []
+    for url in sorted(hidden):
+        try:
+            with err.status(f"Checking {escape(url)}…", spinner="dots"):
+                pr = fetch_pr(url)
+        except GhError as exc:
+            failures.append(f"{url}: {exc}")
+            continue
+        if pr.state and pr.state != "OPEN":
+            del hidden[url]
+            pruned.append(f"{url} [dim]({pr.state.lower()})[/dim]")
+    if pruned:
+        save_hidden(hidden)
+        for line in pruned:
+            console.print(f"Pruned {line}")
+    else:
+        console.print("[dim]Nothing to prune.[/dim]")
+    for failure in failures:
+        err.print(f"[red]Error:[/red] {escape(failure)}")
+    return 1 if failures else 0
+
+
+def _list_hidden(hidden: dict[str, HideEntry], console: Console) -> int:
+    """Print the hide store (the bare ``hide`` subcommand)."""
+    if not hidden:
+        console.print("[dim]No hidden PRs.[/dim]")
+    for url, entry in sorted(hidden.items()):
+        try:
+            detail = f"since {_local(entry['since'])}"
+        except ValueError:
+            detail = "since ?"
+        console.print(f"{escape(url)} [dim]({detail})[/dim]")
+    return 0
+
+
+def _run_hide_command(args: argparse.Namespace, console: Console, err: Console) -> int:
+    """Handle the hide/unhide subcommands; returns the exit code.
+
+    As for snoozes, a corrupt store is fatal here: a write would clobber it,
+    and the bare listing must not show a half-parsed store.
+    """
+    try:
+        hidden = load_hidden()
+        if args.command == "unhide":
+            return _do_unhide(args, hidden, console, err)
+        if args.refs:
+            return _do_hide(args, hidden, datetime.now(UTC), console, err)
+        if args.prune:
+            return _prune_hidden(hidden, console, err)
+        return _list_hidden(hidden, console)
+    except (HideError, SnoozeError, GhError) as exc:
+        err.print(f"[red]Error:[/red] {exc}")
+        return 1
+    except KeyboardInterrupt:
+        err.print("[dim]Interrupted.[/dim]")
+        return 130
+
+
 def _run_merge_command(args: argparse.Namespace, console: Console, err: Console) -> int:
     """Handle the merge subcommand; returns the exit code.
 
@@ -574,7 +724,9 @@ def main(argv: list[str] | None = None) -> int:
         default=argparse.SUPPRESS,
         help="disable colored output",
     )
-    commands = parser.add_subparsers(dest="command", metavar="{snooze,unsnooze,merge}")
+    commands = parser.add_subparsers(
+        dest="command", metavar="{snooze,unsnooze,hide,unhide,merge}"
+    )
     snooze_cmd = commands.add_parser(
         "snooze",
         parents=[common],
@@ -605,6 +757,41 @@ def main(argv: list[str] | None = None) -> int:
         description="Remove the snooze on one or more PRs.",
     )
     unsnooze_cmd.add_argument(
+        "refs",
+        nargs="+",
+        metavar="PR",
+        help="a PR number (scoped by -R, or the current directory's repository) "
+        "or a full URL",
+    )
+    hide_cmd = commands.add_parser(
+        "hide",
+        parents=[common],
+        help="hide PRs from the attention view for good (with no arguments: "
+        "list hidden PRs)",
+        description="Hide one or more PRs from the attention view until you "
+        "unhide them — unlike a snooze, new commits or a change of status "
+        "never bring a hidden PR back. With no PR arguments, list the hidden "
+        "PRs instead.",
+    )
+    hide_cmd.add_argument(
+        "refs",
+        nargs="*",
+        metavar="PR",
+        help="a PR number (scoped by -R, or the current directory's repository) "
+        "or a full URL; omit to list hidden PRs",
+    )
+    hide_cmd.add_argument(
+        "--prune",
+        action="store_true",
+        help="forget hidden PRs that are closed or merged (looks each one up)",
+    )
+    unhide_cmd = commands.add_parser(
+        "unhide",
+        parents=[common],
+        help="bring one or more hidden PRs back",
+        description="Bring one or more hidden PRs back to the attention view.",
+    )
+    unhide_cmd.add_argument(
         "refs",
         nargs="+",
         metavar="PR",
@@ -665,8 +852,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "snooze" and args.snooze_for is not None and not args.refs:
             err.print("[red]Error:[/red] --for requires at least one PR to snooze")
             return 2
+        if args.command == "hide" and args.prune and args.refs:
+            err.print("[red]Error:[/red] --prune takes no PR arguments")
+            return 2
         if args.command == "merge":
             return _run_merge_command(args, console, err)
+        if args.command in ("hide", "unhide"):
+            return _run_hide_command(args, console, err)
         return _run_snooze_command(args, console, err)
 
     qualifiers, list_title, list_style = _VIEWS[args.view]
@@ -748,6 +940,23 @@ def main(argv: list[str] | None = None) -> int:
                 f"[dim]{muted_count} PR(s) muted by config — "
                 "'gh prs -r' still lists them[/dim]"
             )
+        # Hides come next: a standing decision, so a lingering snooze on a
+        # hidden PR must not count as "snoozed hidden" either. Nothing is
+        # pruned here — a hide has no expiry, and closed PRs don't match
+        # the searches anyway ('gh prs hide --prune' cleans them up).
+        try:
+            hidden = load_hidden()
+        except HideError as exc:
+            warn(f"ignoring hidden PRs: {exc}")
+            hidden = {}
+        if hidden:
+            prs, withheld = split_hidden(prs, hidden)
+            hidden_count = sum(pr.needs_attention() for pr in withheld)
+            if hidden_count:
+                err.print(
+                    f"[dim]{hidden_count} hidden PR(s) withheld — "
+                    "'gh prs hide' to list[/dim]"
+                )
         try:
             snoozes = load_snoozes()
         except SnoozeError as exc:

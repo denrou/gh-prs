@@ -10,6 +10,8 @@ from rich.console import Console
 from gh_prs import cli
 from gh_prs.duration import Duration, add_days
 from gh_prs.gh import DEFAULT_STALE_AFTER, GhError, PullRequest
+from gh_prs.hide import hide_path, load_hidden, save_hidden
+from gh_prs.hide import make_entry as make_hide_entry
 from gh_prs.snooze import load_snoozes, make_entry, save_snoozes, snooze_path
 
 
@@ -1136,3 +1138,226 @@ class TestMergeCommand:
         assert cli.main([*flags, "merge", _MERGE_URL]) == 2
         assert "do not apply" in capsys.readouterr().err
         assert backend["actions"] == []
+
+
+def _hidden_entry() -> dict[str, str]:
+    return make_hide_entry(datetime.now(UTC))
+
+
+class TestHideFiltering:
+    def test_hidden_pr_withheld_from_attention_view_and_noted(
+        self, fake_backend, capsys
+    ):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" not in captured.out
+        assert "1 hidden PR(s) withheld" in captured.err
+
+    def test_hide_survives_new_commits_and_status_changes(self, fake_backend, capsys):
+        # The whole point: a snooze would resurface on either; a hide must not.
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        for oid, reasons in [("beef", {"review"}), ("f00d", {"new-commits"})]:
+            fake_backend["prs"] = [
+                _pr(1, url=_SNOOZE_URL, head_ref_oid=oid, attention_reasons=reasons)
+            ]
+            assert cli.main(["--no-color"]) == 0
+            captured = capsys.readouterr()
+            assert "PR 1" not in captured.out
+            assert "withheld" in captured.err
+        assert _SNOOZE_URL in load_hidden()
+
+    def test_hidden_pr_without_attention_reasons_is_not_counted(
+        self, fake_backend, capsys
+    ):
+        fake_backend["prs"] = [_pr(1, url=_SNOOZE_URL)]
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        assert cli.main(["--no-color"]) == 0
+        assert "withheld" not in capsys.readouterr().err
+
+    def test_attention_count_excludes_hidden_and_notes_it(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, attention_reasons={"review"}),
+            _pr(2, attention_reasons={"ready"}),
+        ]
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        assert cli.main(["--count"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "1"
+        assert "1 hidden PR(s) withheld" in captured.err
+
+    def test_review_view_ignores_hides(self, fake_backend, capsys):
+        fake_backend["prs"] = [_pr(1, url=_SNOOZE_URL)]
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        assert cli.main(["-r", "--no-color"]) == 0
+        assert "PR 1" in capsys.readouterr().out
+
+    def test_json_ignores_hides(self, fake_backend, capsys):
+        fake_backend["prs"] = [_pr(1, url=_SNOOZE_URL, attention_reasons={"review"})]
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        assert cli.main(["--json", "--no-color"]) == 0
+        assert _SNOOZE_URL in capsys.readouterr().out
+
+    def test_hidden_pr_does_not_count_as_snoozed_hidden(self, fake_backend, capsys):
+        # A lingering snooze on a hidden PR must not inflate the snooze line,
+        # and the view must not prune it either (no store write).
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        save_snoozes({_SNOOZE_URL: _entry("cafe")})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "hidden PR(s) withheld" in captured.err
+        assert "snoozed PR(s) hidden" not in captured.err
+
+    def test_entry_for_absent_pr_is_kept(self, fake_backend, capsys):
+        # Absent may mean closed — or merely beyond the search cap.
+        fake_backend["prs"] = []
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        assert cli.main(["--no-color"]) == 0
+        assert "withheld" not in capsys.readouterr().err
+        assert _SNOOZE_URL in load_hidden()
+
+    @pytest.mark.parametrize("raw", [b"{not json", b'\xff\xfe{"a": 1}'])
+    def test_corrupt_store_warns_and_shows_everything(self, fake_backend, capsys, raw):
+        fake_backend["prs"] = [_pr(1, url=_SNOOZE_URL, attention_reasons={"review"})]
+        path = hide_path()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(raw)
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "ignoring hidden PRs" in captured.err
+
+
+class TestHideActions:
+    def test_hide_url_needs_no_gh_lookup(self, monkeypatch, capsys):
+        def boom(*args, **kwargs):
+            raise AssertionError("gh must not be called for a full URL")
+
+        monkeypatch.setattr(cli, "resolve_pr", boom)
+        monkeypatch.setattr(cli, "fetch_pr_head", boom)
+        monkeypatch.setattr(cli, "fetch_prs", boom)
+        assert cli.main(["hide", f"{_SNOOZE_URL}/files?diff=split"]) == 0
+        entry = load_hidden()[_SNOOZE_URL]
+        datetime.fromisoformat(entry["since"])  # a parseable timestamp
+        assert "Hidden" in capsys.readouterr().out
+
+    def test_hide_bare_number_resolves_via_gh(self, monkeypatch):
+        seen: list[tuple[str, str | None]] = []
+
+        def fake_resolve(ref, repo):
+            seen.append((ref, repo))
+            return _SNOOZE_URL, "cafe"
+
+        monkeypatch.setattr(cli, "resolve_pr", fake_resolve)
+        assert cli.main(["hide", "1", "-R", "acme/widgets"]) == 0
+        assert seen == [("1", "acme/widgets")]
+        assert _SNOOZE_URL in load_hidden()
+
+    def test_hide_multiple_refs(self):
+        other = "https://github.com/acme/widgets/pull/2"
+        assert cli.main(["hide", _SNOOZE_URL, other]) == 0
+        assert set(load_hidden()) == {_SNOOZE_URL, other}
+
+    def test_hide_partial_failure_records_good_refs(self, monkeypatch, capsys):
+        def boom(ref, repo):
+            raise GhError("no such PR")
+
+        monkeypatch.setattr(cli, "resolve_pr", boom)
+        assert cli.main(["hide", _SNOOZE_URL, "999"]) == 1
+        assert _SNOOZE_URL in load_hidden()
+        assert "no such PR" in capsys.readouterr().err
+
+    def test_hide_rejects_non_pr_url(self, capsys):
+        assert cli.main(["hide", "https://github.com/acme/widgets/issues/1"]) == 1
+        assert load_hidden() == {}
+        assert "not a pull request URL" in capsys.readouterr().err
+
+    def test_rehiding_keeps_the_original_entry(self, capsys):
+        original = {"since": "2026-01-01T00:00:00+00:00"}
+        save_hidden({_SNOOZE_URL: original})
+        assert cli.main(["hide", _SNOOZE_URL, "--no-color"]) == 0
+        assert load_hidden()[_SNOOZE_URL] == original
+        assert "already hidden" in capsys.readouterr().out
+
+    def test_unhide_removes_entry(self, capsys):
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        assert cli.main(["unhide", _SNOOZE_URL]) == 0
+        assert load_hidden() == {}
+        assert "Unhidden" in capsys.readouterr().out
+
+    def test_unhide_missing_entry_errors(self, capsys):
+        assert cli.main(["unhide", _SNOOZE_URL]) == 1
+        assert "is not hidden" in capsys.readouterr().err
+
+    def test_unhide_bare_number_resolves_via_gh(self, monkeypatch):
+        save_hidden({_SNOOZE_URL: _hidden_entry()})
+        monkeypatch.setattr(cli, "resolve_pr", lambda ref, repo: (_SNOOZE_URL, "cafe"))
+        assert cli.main(["unhide", "1"]) == 0
+        assert load_hidden() == {}
+
+    def test_bare_hide_lists_entries(self, capsys):
+        save_hidden({_SNOOZE_URL: {"since": "2026-10-06T12:00:00+00:00"}})
+        assert cli.main(["hide", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert _SNOOZE_URL in out
+        assert "since 2026-10-06" in out
+
+    def test_bare_hide_empty_store_says_so(self, capsys):
+        assert cli.main(["hide", "--no-color"]) == 0
+        assert "No hidden PRs" in capsys.readouterr().out
+
+    def test_corrupt_store_is_fatal_for_the_subcommands(self, capsys):
+        path = hide_path()
+        path.parent.mkdir(parents=True)
+        path.write_text("{not json", encoding="utf-8")
+        assert cli.main(["hide", _SNOOZE_URL]) == 1
+        assert cli.main(["hide"]) == 1
+        assert path.read_text(encoding="utf-8") == "{not json"
+        assert "not valid JSON" in capsys.readouterr().err
+
+    def test_prune_drops_closed_and_keeps_open(self, monkeypatch, capsys):
+        merged = "https://github.com/acme/widgets/pull/2"
+        save_hidden({_SNOOZE_URL: _hidden_entry(), merged: _hidden_entry()})
+        states = {_SNOOZE_URL: "OPEN", merged: "MERGED"}
+        monkeypatch.setattr(
+            cli, "fetch_pr", lambda url: _pr(1, url=url, state=states[url])
+        )
+        assert cli.main(["hide", "--prune", "--no-color"]) == 0
+        assert set(load_hidden()) == {_SNOOZE_URL}
+        out = capsys.readouterr().out
+        assert merged in out and "merged" in out
+
+    def test_prune_keeps_entries_it_cannot_inspect(self, monkeypatch, capsys):
+        # Positive evidence only: an unknown state or a failed lookup keeps
+        # the entry (the PR may be temporarily unreachable).
+        unknown = "https://github.com/acme/widgets/pull/2"
+        save_hidden({_SNOOZE_URL: _hidden_entry(), unknown: _hidden_entry()})
+
+        def fake_fetch_pr(url):
+            if url == unknown:
+                return _pr(2, url=url, state="")
+            raise GhError("boom")
+
+        monkeypatch.setattr(cli, "fetch_pr", fake_fetch_pr)
+        assert cli.main(["hide", "--prune", "--no-color"]) == 1
+        assert set(load_hidden()) == {_SNOOZE_URL, unknown}
+        captured = capsys.readouterr()
+        assert "Nothing to prune" in captured.out
+        assert "boom" in captured.err
+
+    def test_prune_rejects_refs(self, capsys):
+        assert cli.main(["hide", "--prune", _SNOOZE_URL]) == 2
+        assert "--prune takes no PR arguments" in capsys.readouterr().err
+        assert load_hidden() == {}
+
+    @pytest.mark.parametrize("flag", ["-r", "--count", "--json", "--stale-after=1d"])
+    def test_view_flags_rejected_with_hide(self, flag, capsys):
+        assert cli.main([flag, "hide", _SNOOZE_URL]) == 2
+        assert "do not apply to 'gh prs hide'" in capsys.readouterr().err
+        assert load_hidden() == {}
