@@ -107,11 +107,12 @@ gh prs --count      # print only the PR count for the selected view
                     # (attention count by default; handy for status bars)
 gh prs --no-color   # disable colored output
 
-gh prs snooze 123           # hide a PR (of the current repo) until tomorrow morning
+gh prs snooze 123           # hide a PR (of the current repo) until it changes
 gh prs snooze 123 -R o/r    # …of another repo (owner/repo)
-gh prs snooze 12 34 --for 3d  # …several at once, for a custom window (12h, 3d, 1w)
+gh prs snooze 12 34 --for 3d  # …several at once, for a fixed window (12h, 3d, 1w)
 gh prs unsnooze 123         # remove a PR's snooze
 gh prs snooze               # with no arguments: list snoozed PRs
+gh prs snooze --prune       # forget snoozed PRs that are closed or merged
 
 gh prs hide 123             # hide a PR for good (a teammate has the review covered)
 gh prs unhide 123           # bring it back
@@ -141,27 +142,38 @@ the way `gh` does: a bare number, scoped by `-R/--repo owner/repo` (or the
 repository of the current directory when omitted), or a full URL. Bare numbers
 are resolved through `gh`, so Enterprise hosts work too.
 
-A snooze lasts until tomorrow morning by default (`--for 12h`/`3d`/`1w` to
-change). Days and weeks are counted on the calendar and end at local midnight:
-`--for 1d` at noon, or at 7 a.m., brings the PR back on your first look
-tomorrow, and `--for 3d` on the morning three days from now. Hours stay an
-exact span — `--for 4h` means four hours. A snooze is
-also tied to the PR's state at snooze time: its head commit _and_ the reasons
-it needs your attention. Whichever comes first — the window elapsing, new
-commits landing, or those reasons changing (say a review lands and a PR that
-was waiting is now yours to merge) — resurfaces the PR with a warning and
-drops the snooze, so you acknowledge a specific state for a bounded time,
-never future work. The attention view prints how many snoozed PRs it withheld
-on stderr — hiding is visible, never silent. Explicit views (`-c`/`-r`/`-a`),
-`--count` for those views, and `--json` ignore snoozes entirely, so scripts
-and exact counts are unaffected.
+A snooze is tied to the PR's state at snooze time: its head commit _and_ the
+reasons it needs your attention. By default it lasts until that state
+changes — new commits landing, or those reasons changing (say a review lands
+and a PR that was waiting is now yours to merge) — and the PR then resurfaces
+with a warning and the snooze is dropped. You acknowledge a specific state,
+never future work; "wake me when something happens" needs no expiry. Bear in
+mind what that means for a review request: nothing moves on such a PR until
+you act, so an open-ended snooze keeps it out of sight until the author pushes
+or pings you — the "N snoozed PR(s) hidden" line is your reminder.
+
+`--for 12h`/`3d`/`1w` adds a deadline: the PR also comes back when the window
+elapses, whichever comes first. Days and weeks are counted on the calendar and
+end at local midnight: `--for 1d` at noon, or at 7 a.m., brings the PR back on
+your first look tomorrow, and `--for 3d` on the morning three days from now.
+Hours stay an exact span — `--for 4h` means four hours.
+
+Because its reasons are the only thing besides the head that can lift an
+open-ended snooze, the PR must be in your attention view when you snooze it
+(and the view must be readable); otherwise the command tells you so and
+suggests `--for`, which snoozes on head and window alone. The attention view
+prints how many snoozed PRs it withheld on stderr — hiding is visible, never
+silent. Explicit views (`-c`/`-r`/`-a`), `--count` for those views, and
+`--json` ignore snoozes entirely, so scripts and exact counts are unaffected.
 
 Snoozes are stored locally in `~/.config/gh-prs/snooze.json` (honors
-`$XDG_CONFIG_HOME`); they never touch the PR on GitHub.
+`$XDG_CONFIG_HOME`); they never touch the PR on GitHub. An open-ended snooze
+has no expiry, so `gh prs snooze --prune` forgets the snoozed PRs that have
+since been closed or merged — the same housekeeping as `hide --prune`.
 
 ### Hiding
 
-A snooze acknowledges one state of a PR for a while; sometimes the decision
+A snooze acknowledges one state of a PR; sometimes the decision
 is final — you were requested on a PR a teammate is already reviewing, and
 every push would otherwise bring it back. `gh prs hide <pr>...` takes it
 out of the attention view until you say otherwise: new commits, a rebase, a
@@ -256,7 +268,7 @@ the rule applies everywhere; list repositories and the same bot stays visible
 in the ones you maintain. `repos` scopes a rule _in_ rather than _out_ on
 purpose: a misspelt repository makes the rule match nothing, so the PRs show
 instead of a repository you meant to keep going quiet. Where a snooze
-silences one PR for a while, a mute rule silences a kind of PR for good.
+silences one state of one PR, a mute rule silences a kind of PR for good.
 Muted PRs drop out of the default view and `--count`; a dim line on stderr
 says how many were withheld, and `gh prs -r` (like `-a` and `--json`) still
 lists them, so nothing disappears without a trace. Logins, labels and

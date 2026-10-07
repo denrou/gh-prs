@@ -1,7 +1,7 @@
 """Mute rules: review requests you never intend to answer, declared once.
 
-A snooze silences one PR for a while; a mute rule silences a *kind* of PR for
-good — typically a bot's dependency bumps for a stack you don't own, which
+A snooze silences one state of one PR; a mute rule silences a *kind* of PR
+for good — typically a bot's dependency bumps for a stack you don't own, which
 branch protection keeps routing to your team anyway. Rules are authored by
 hand in ``config.json`` (parsed by ``config.py``); this module only decides
 whether a fetched PR matches one. No ``gh`` calls, like ``snooze.py``.

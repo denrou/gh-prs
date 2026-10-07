@@ -183,6 +183,8 @@ class TestStore:
             '{"url": "bare-oid"}',  # the pre-expiry flat format
             '{"url": {"oid": "cafe"}}',  # missing until
             '{"url": {"oid": "cafe", "until": 5}}',
+            # open-ended without reasons: nothing but the head could lift it
+            '{"url": {"oid": "cafe", "until": null}}',
         ],
     )
     def test_wrong_shape_raises(self, tmp_path, raw):
@@ -200,6 +202,13 @@ class TestStore:
         entry = make_entry("cafe", _NOW + timedelta(hours=24), ["review"])
         save_snoozes({_URL: entry}, path)
         assert load_snoozes(path) == {_URL: entry}
+
+    def test_open_ended_entry_roundtrips(self, tmp_path):
+        path = tmp_path / "snooze.json"
+        entry = make_entry("cafe", None, ["review"])
+        save_snoozes({_URL: entry}, path)
+        assert load_snoozes(path) == {_URL: entry}
+        assert '"until": null' in path.read_text()
 
     @pytest.mark.parametrize(
         "raw",
@@ -228,6 +237,13 @@ class TestMakeEntry:
         # from it — so the key is present, unlike the None (absent) case.
         assert make_entry("cafe", _NOW + timedelta(hours=1), [])["reasons"] == []
 
+    def test_open_ended_entry_stores_null_until(self):
+        assert make_entry("cafe", None, ["review"])["until"] is None
+
+    def test_open_ended_entry_requires_reasons(self):
+        with pytest.raises(SnoozeError):
+            make_entry("cafe", None)
+
 
 class TestIsExpired:
     def test_future_timestamp_is_live(self):
@@ -235,6 +251,13 @@ class TestIsExpired:
 
     def test_past_timestamp_is_expired(self):
         assert is_expired(_entry(hours=-1), _NOW)
+
+    def test_open_ended_entry_never_expires(self):
+        assert not is_expired(make_entry("cafe", None, ["review"]), _NOW)
+
+    def test_missing_until_counts_as_expired(self):
+        # Absent is corruption, not "forever": fail-safe, the PR shows.
+        assert is_expired({"oid": "cafe", "reasons": ["review"]}, _NOW)
 
     @pytest.mark.parametrize(
         "until",
@@ -295,6 +318,13 @@ class TestSplitSnoozed:
         visible, hidden, dead = split_snoozed([], snoozes, _NOW)
         assert (visible, hidden, dead) == ([], [], {})
         assert snoozes == {"https://github.com/x/y/pull/1": _entry()}
+
+    def test_open_ended_entry_for_absent_pr_is_kept(self):
+        # Nothing here can tell a closed PR from one beyond the search cap;
+        # 'snooze --prune' is the explicit clean-up.
+        snoozes = {"https://github.com/x/y/pull/1": make_entry("cafe", None, [])}
+        visible, hidden, dead = split_snoozed([], snoozes, _NOW)
+        assert (visible, hidden, dead) == ([], [], {})
 
     def test_elapsed_entry_for_absent_pr_is_dead(self):
         # A time-expired entry hides nothing; pruning it caps store growth.

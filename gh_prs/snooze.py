@@ -1,18 +1,22 @@
-"""Local per-PR snooze store: hide a PR from the attention view for a while.
+"""Local per-PR snooze store: hide a PR from the attention view until it changes.
 
-A snooze records the PR's head commit oid, an expiry timestamp (the next
-morning by default: local midnight, see ``duration``), and — when known — the attention reasons it had at snooze time.
-The PR stays hidden from the default (attention) view only while ALL hold:
-the head still matches, the window has not elapsed, and its attention
-reasons are unchanged. As soon as any breaks — new commits, a rebase, the
-clock, a review landing that turns a waiting PR into one that's ready to
-merge, or an oid/timestamp that can't be compared — the PR resurfaces and
-the dead entry is pruned. Fail-safe direction: a snooze may only ever hide
-the exact acknowledged state for a bounded time, never unknown or newer work.
+A snooze records the PR's head commit oid, the attention reasons it had at
+snooze time, and — only when ``--for`` asked for a fixed window — an expiry
+timestamp (local midnight for day-based windows, see ``duration``). The PR
+stays hidden from the default (attention) view only while ALL hold: the head
+still matches, its attention reasons are unchanged, and the window, if any,
+has not elapsed. As soon as any breaks — new commits, a rebase, a review
+landing that turns a waiting PR into one that's ready to merge, the clock, or
+an oid/timestamp that can't be compared — the PR resurfaces and the dead
+entry is pruned. Fail-safe direction: a snooze may only ever hide the exact
+acknowledged state, never unknown or newer work. An open-ended snooze (no
+window) therefore *must* carry reasons: with nothing but the head to watch, a
+review landing on an authored PR would never bring it back. The invariant is
+structural — ``make_entry`` and ``load_snoozes`` both refuse an open-ended
+entry without them — so no code path can hide a PR on its head alone forever.
 
 The store is a JSON object mapping canonical PR URL →
-``{"oid", "until", "reasons"?}`` (``reasons`` is a sorted list, absent on
-entries written before it existed), kept at
+``{"oid", "until", "reasons"?}``, kept at
 ``$XDG_CONFIG_HOME/gh-prs/snooze.json`` (``~/.config/gh-prs/snooze.json`` by
 default). Only the default attention view (its table and ``--count``)
 consults it; explicit views (``-c``/``-r``/``-a``), their fast counts, and
@@ -35,13 +39,21 @@ class SnoozeError(Exception):
 
 class SnoozeEntry(TypedDict):
     """One stored snooze: the acknowledged head oid, the expiry, and the
-    attention reasons at snooze time. ``reasons`` is absent on entries written
-    before reason-tracking existed (and on PRs whose reasons couldn't be
-    captured); such entries fall back to the head-and-window rule alone.
+    attention reasons at snooze time.
+
+    ``until`` is an ISO timestamp for a fixed window, or ``None`` for an
+    open-ended snooze that only the head or the reasons can lift. The key is
+    always present: a *missing* ``until`` is a malformed entry, not an
+    open-ended one, so a half-written file can never hide a PR for good.
+
+    ``reasons`` is absent on windowed entries written before reason-tracking
+    existed, and on windowed snoozes of PRs whose reasons couldn't be
+    captured; such entries fall back to the head-and-window rule alone. An
+    open-ended entry always has it (see the module docstring).
     """
 
     oid: str
-    until: str
+    until: str | None
     reasons: NotRequired[list[str]]
 
 
@@ -128,6 +140,25 @@ def _reasons_ok(reasons: object) -> bool:
     )
 
 
+def _entry_ok(value: object) -> bool:
+    """Shape check for one stored entry.
+
+    ``until`` must be present — a string (a window) or ``null`` (open-ended);
+    its absence is treated as corruption, never as "forever". An open-ended
+    entry must also carry ``reasons``: that is the one thing besides the head
+    that can lift it, so an entry without them would hide a PR on its head
+    alone for good (the module docstring explains why that must not exist).
+    """
+    if not isinstance(value, dict) or not isinstance(value.get("oid"), str):
+        return False
+    if "until" not in value or not _reasons_ok(value.get("reasons")):
+        return False
+    until = value["until"]
+    if until is None:
+        return value.get("reasons") is not None
+    return isinstance(until, str)
+
+
 def load_snoozes(path: Path | None = None) -> dict[str, SnoozeEntry]:
     """Return the stored snoozes as ``{PR url: {"oid", "until", "reasons"?}}``.
 
@@ -141,15 +172,12 @@ def load_snoozes(path: Path | None = None) -> dict[str, SnoozeEntry]:
     if data is None:
         return {}
     if not isinstance(data, dict) or not all(
-        isinstance(k, str)
-        and isinstance(v, dict)
-        and isinstance(v.get("oid"), str)
-        and isinstance(v.get("until"), str)
-        and _reasons_ok(v.get("reasons"))
-        for k, v in data.items()
+        isinstance(k, str) and _entry_ok(v) for k, v in data.items()
     ):
         raise SnoozeError(
-            f"{path} has an unexpected shape (want {{url: {{oid, until, reasons?}}}})"
+            f"{path} has an unexpected shape "
+            "(want {url: {oid, until, reasons?}}; an entry with a null until "
+            "must have reasons)"
         )
     return data
 
@@ -164,21 +192,30 @@ def save_snoozes(snoozes: dict[str, SnoozeEntry], path: Path | None = None) -> N
 
 def make_entry(
     oid: str,
-    until: datetime,
+    until: datetime | None,
     reasons: list[str] | None = None,
 ) -> SnoozeEntry:
-    """Build a store entry hiding ``oid`` until ``until``.
+    """Build a store entry hiding ``oid`` until ``until``, or for good when
+    ``until`` is ``None`` (lifted only by the head or the reasons changing).
 
-    ``until`` comes from ``Duration.until``, so a day-based snooze already
-    lands on the morning it was meant for.
+    A datetime ``until`` comes from ``Duration.until``, so a day-based snooze
+    already lands on the morning it was meant for.
 
     ``reasons`` (the PR's attention reasons at snooze time) is stored sorted
     so a later set-equality check is order-independent; ``None`` omits the
-    key, leaving the entry on the head-and-window rule alone.
+    key, leaving a windowed entry on the head-and-window rule alone. An
+    open-ended entry has no window to fall back on, so ``None`` reasons are
+    refused there (``SnoozeError``): the caller must capture them or ask for
+    a window instead.
     """
+    if until is None and reasons is None:
+        raise SnoozeError(
+            "an open-ended snooze needs the PR's attention reasons; "
+            "capture them or give it a window"
+        )
     entry: SnoozeEntry = {
         "oid": oid,
-        "until": until.isoformat(timespec="seconds"),
+        "until": None if until is None else until.isoformat(timespec="seconds"),
     }
     if reasons is not None:
         entry["reasons"] = sorted(reasons)
@@ -188,14 +225,22 @@ def make_entry(
 def is_expired(entry: SnoozeEntry, now: datetime) -> bool:
     """True when the entry's window has elapsed.
 
-    A missing, unparseable, or naive stored timestamp counts as expired:
-    fail-safe, the PR shows. ``now`` must be timezone-aware — the comparison
-    happens outside the try so a naive ``now`` (a caller bug) raises loudly
-    instead of silently expiring every entry in the store.
+    An open-ended entry (``until`` is ``None``) never expires: only its head
+    or its reasons can lift it. A missing, unparseable, or naive stored
+    timestamp counts as expired: fail-safe, the PR shows. ``now`` must be
+    timezone-aware — the comparison happens outside the try so a naive
+    ``now`` (a caller bug) raises loudly instead of silently expiring every
+    entry in the store.
     """
     try:
-        until = datetime.fromisoformat(entry["until"])
-    except KeyError, ValueError, TypeError:
+        stored = entry["until"]
+    except KeyError:
+        return True
+    if stored is None:
+        return False
+    try:
+        until = datetime.fromisoformat(stored)
+    except ValueError, TypeError:
         return True
     if until.tzinfo is None:
         return True
@@ -208,13 +253,16 @@ def split_snoozed(
     """Partition PRs into (visible, hidden) and report dead snoozes.
 
     A PR is hidden only while its head oid is known and still equals the
-    snoozed oid, the window has not elapsed, AND — when the entry recorded
-    them — its attention reasons still match those acknowledged at snooze
-    time. Dead entries — head moved, window elapsed (checked even for PRs
-    absent from the search), reasons changed (e.g. a review landed and a
+    snoozed oid, the window (if any) has not elapsed, AND — when the entry
+    recorded them — its attention reasons still match those acknowledged at
+    snooze time. Dead entries — head moved, window elapsed (checked even for
+    PRs absent from the search), reasons changed (e.g. a review landed and a
     waiting PR is now ready to merge), or a timestamp that can't be compared
     — come back as ``{url: reason}`` for the caller to prune. Live entries
     for absent PRs are kept: the PR may merely be beyond a truncated search.
+    An open-ended entry never dies this way for an absent PR — nothing here
+    can tell a closed PR from one beyond the cap — so entries for closed or
+    merged PRs are the explicit ``snooze --prune``'s to clean up.
     """
     visible: list[PullRequest] = []
     hidden: list[PullRequest] = []

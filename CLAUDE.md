@@ -310,7 +310,7 @@ what "tomorrow" means at work.
 
 ### Muting (`mute.py`, `config.py`, applied in `cli.py`)
 
-A snooze silences one PR for a while; a mute rule silences a _kind_ of PR
+A snooze silences one state of one PR; a mute rule silences a _kind_ of PR
 for good — the motivating case is a Renovate app whose Helm bumps request
 review from a whole team because branch protection demands a team review,
 while only the Python bumps are the viewer's to look at. Rules live in
@@ -370,29 +370,47 @@ hiding nothing.
 
 ### Snoozing (`snooze.py`, applied in `cli.py`)
 
-`gh prs snooze <pr>...` records each PR's head oid, an expiry timestamp
-(default `1d`, i.e. tomorrow's local midnight; `--for 12h/3d/1w`, counted as
-described under Configuration), and the PR's `attention_reasons` at snooze
-time (a sorted list; captured by fetching the attention view once, and
-omitted when the PR isn't in it or the fetch fails); the default attention
+`gh prs snooze <pr>...` records each PR's head oid, the PR's
+`attention_reasons` at snooze time (a sorted list, captured by fetching the
+attention view once), and — only with `--for 12h/3d/1w`, counted as
+described under Configuration — an expiry timestamp; the default attention
 view (table and `--count`) then hides the PR while _all_ hold: head
-unchanged, window open, and — when reasons were captured — the reason set
-unchanged. The reason check is what lets a PR snoozed while waiting for
-review resurface once it's reviewed and becomes yours to merge, even though
-its head never moved. The same fail-safe direction as everywhere else
-applies: an unknown oid, an uncomparable timestamp, a moved head, a changed
-reason set, an elapsed window, or an unreadable store all _show_ the PR (a
-corrupt store only warns on the view path, but is fatal for the
-`snooze`/`unsnooze` subcommands, which must not clobber the file — including
-the bare listing, which must not render a half-parsed store). Entries written
-before reason-tracking (no `reasons` key) keep working on head-and-window
-alone. Dead entries are pruned — with an on-stderr "snooze expired" warning
-when the PR actually resurfaced — and the view reports how many
-attention-worthy PRs it withheld. Explicit views (`-c`/`-r`/`-a`), fast
+unchanged, reason set unchanged, and the window (if any) still open. Without
+`--for` the snooze is open-ended: "wake me when something changes", lifted
+only by a push or a change of status. The reason check is what lets a PR
+snoozed while waiting for review resurface once it's reviewed and becomes
+yours to merge, even though its head never moved — and it is the only thing
+besides the head that can lift an open-ended snooze, which is why that form
+_requires_ the reasons: the PR must be in the attention view (a PR that
+isn't is a per-ref failure, with a hint to pass `--for`) and the capture
+fetch must succeed (a failure aborts the command rather than degrading).
+With `--for` the window is a fallback, so there the capture stays
+best-effort — omitted with a warning when the PR isn't in the view or the
+fetch fails. The invariant is structural: `make_entry` and `load_snoozes`
+both refuse an entry whose `until` is `null` without `reasons`, so no path
+can hide a PR on its head alone for good. The same fail-safe direction as
+everywhere else applies: an unknown oid, an uncomparable timestamp, a moved
+head, a changed reason set, an elapsed window, or an unreadable store all
+_show_ the PR (a corrupt store only warns on the view path, but is fatal for
+the `snooze`/`unsnooze` subcommands, which must not clobber the file —
+including the bare listing, which must not render a half-parsed store). A
+_missing_ `until` key is corruption (`load_snoozes` rejects it, `is_expired`
+reads it as elapsed), never "forever": only an explicit `null` means
+open-ended, so a half-written entry cannot hide a PR indefinitely. Entries
+written before reason-tracking (no `reasons` key) keep working on
+head-and-window alone. Dead entries are pruned — with an on-stderr "snooze
+expired" warning when the PR actually resurfaced — and the view reports how
+many attention-worthy PRs it withheld. Explicit views (`-c`/`-r`/`-a`), fast
 counts, and `--json` never consult the store — their output stays exact.
 Entries whose PR no longer appears in any search are kept while their window
 is open (the PR may be closed _or_ merely beyond the 100-node cap; deleting
-on absence would lose live snoozes) and pruned quietly once it elapses.
+on absence would lose live snoozes) and pruned quietly once it elapses. An
+open-ended entry has no window to elapse, so like a hide it would accumulate
+for closed and merged PRs: `gh prs snooze --prune` is the explicit,
+network-bound clean-up, sharing `hide --prune`'s implementation
+(`_prune_closed`) and rules — drop only on positive evidence that the PR is
+no longer `OPEN`, keep and report anything that can't be inspected, reject
+PR arguments.
 
 Snoozing is exposed as subcommands, matching `gh`'s verb style
 (`gh pr close`): `gh prs snooze <pr>...` and `gh prs unsnooze <pr>...`, with

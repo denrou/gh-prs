@@ -6,6 +6,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from importlib.metadata import version
+from collections.abc import Callable
 from typing import Any
 
 from rich.console import Console
@@ -67,9 +68,6 @@ _SECTIONS_WITH_AUTHOR = {"review", "new-commits"}
 # --repo or the current directory), unlike a full URL which normalize_pr_url
 # canonicalizes offline.
 _BARE_NUMBER = re.compile(r"^\d+$")
-
-# How long a snooze lasts when --for is not given.
-_DEFAULT_SNOOZE_FOR = "1d"
 
 # The flags the snooze/unsnooze subcommands replaced, each with the syntax to
 # suggest instead. Checked before argparse runs so the error is a migration
@@ -274,17 +272,23 @@ def _settings(err: Console) -> Config:
         return Config()
 
 
-def _attention_reasons_by_url(err: Console, config: Config) -> dict[str, list[str]]:
+def _attention_reasons_by_url(
+    err: Console, config: Config, *, required: bool
+) -> dict[str, list[str]]:
     """Map each attention-view PR to its current reasons, for snooze capture.
 
     ``config`` must hold the same staleness settings later views will use
     (see ``_settings``) so a captured 'stale' reason doesn't spuriously
     differ from the rendered one and defeat the snooze on the next run.
 
-    Best-effort: a lookup failure degrades to an empty map (the snooze still
-    records head + window, just without reason-change invalidation) rather
-    than aborting the snooze. Only PRs the attention searches return appear —
-    a PR snoozed by an unrelated URL simply gets no reasons.
+    For a windowed snooze (``required`` false) this is best-effort: a lookup
+    failure degrades to an empty map (the snooze still records head + window,
+    just without reason-change invalidation) rather than aborting the snooze.
+    An open-ended snooze has no window to fall back on — the reasons are the
+    only thing besides the head that can lift it — so there the failure is
+    raised (``GhError``) and nothing gets snoozed. Only PRs the attention
+    searches return appear — a PR snoozed by an unrelated URL simply gets no
+    reasons.
     """
     qualifiers = _VIEWS["attention"][0]
 
@@ -300,6 +304,11 @@ def _attention_reasons_by_url(err: Console, config: Config) -> dict[str, list[st
                 skip_weekends=config.skip_weekends,
             )
     except GhError as exc:
+        if required:
+            raise GhError(
+                f"could not read attention state ({exc}); an open-ended snooze "
+                "needs it — pass --for to snooze for a fixed window instead"
+            ) from exc
         warn(f"could not read attention state ({exc}); snoozing without it")
         return {}
     return {pr.url: sorted(pr.attention_reasons) for pr in prs}
@@ -314,19 +323,25 @@ def _do_snooze(
 ) -> int:
     """Snooze every PR in ``args.refs``; return the exit code.
 
-    Refs are resolved independently: a bad one is reported and skipped while
-    the rest are snoozed (partial success exits non-zero). The store is
+    Without ``--for`` the snooze is open-ended: lifted only when the PR's head
+    moves or its attention reasons change. With it, the window is a third
+    way out. Refs are resolved independently: a bad one is reported and
+    skipped while the rest are snoozed (partial success exits non-zero). An
+    open-ended snooze additionally needs the PR in the attention view, so its
+    reasons can be captured; a PR that isn't there is a per-ref failure like
+    any other (``--for`` snoozes it on head and window alone). The store is
     written once, only if at least one ref resolved.
     """
     # Validate the duration up front so a typo fails before any network
     # round-trip. The config's weekend policy decides both how long a 'w' is
     # and which days a day-based window counts.
     config = _settings(err)
-    duration = parse_duration(
-        args.snooze_for or _DEFAULT_SNOOZE_FOR,
-        week_days=week_days(config.skip_weekends),
-    )
-    until = duration.until(now, config.skip_weekends)
+    until: datetime | None = None
+    if args.snooze_for is not None:
+        duration = parse_duration(
+            args.snooze_for, week_days=week_days(config.skip_weekends)
+        )
+        until = duration.until(now, config.skip_weekends)
     resolved: dict[str, str] = {}  # canonical url -> head oid
     failures: list[str] = []
     for ref in args.refs:
@@ -341,17 +356,33 @@ def _do_snooze(
     # lapses when they change — e.g. a review lands and a waiting PR becomes
     # ready to merge — not only when its head moves. Only worth a fetch once
     # at least one ref resolved.
-    reasons_by_url = _attention_reasons_by_url(err, config) if resolved else {}
+    reasons_by_url = (
+        _attention_reasons_by_url(err, config, required=until is None)
+        if resolved
+        else {}
+    )
+    snoozed: list[str] = []
     for url, oid in resolved.items():
-        snoozes[url] = make_entry(oid, until, reasons_by_url.get(url))
-    if resolved:
-        save_snoozes(snoozes)
-        for url in resolved:
-            console.print(
-                f"Snoozed {escape(url)} [dim](until "
-                f"{_local(snoozes[url]['until'])}, or sooner if its head moves "
-                "or its status changes)[/dim]"
+        reasons = reasons_by_url.get(url)
+        if until is None and reasons is None:
+            failures.append(
+                f"{url} is not in your attention view, so its status cannot "
+                "be tracked; pass --for to snooze it for a fixed window"
             )
+            continue
+        snoozes[url] = make_entry(oid, until, reasons)
+        snoozed.append(url)
+    if snoozed:
+        save_snoozes(snoozes)
+        for url in snoozed:
+            if until is None:
+                detail = "until its head moves or its status changes"
+            else:
+                detail = (
+                    f"until {_local(snoozes[url]['until'])}, or sooner if its "
+                    "head moves or its status changes"
+                )
+            console.print(f"Snoozed {escape(url)} [dim]({detail})[/dim]")
     for failure in failures:
         err.print(f"[red]Error:[/red] {escape(failure)}")
     return 1 if failures else 0
@@ -398,6 +429,8 @@ def _list_snoozes(
     for url, entry in sorted(snoozes.items()):
         if is_expired(entry, now):
             detail = "expired"
+        elif entry["until"] is None:
+            detail = f"until head moving off {entry['oid'][:12]} or status changing"
         else:
             detail = (
                 f"until {_local(entry['until'])}, "
@@ -423,6 +456,8 @@ def _run_snooze_command(
             return _do_unsnooze(args, snoozes, console, err)
         if args.refs:
             return _do_snooze(args, snoozes, now, console, err)
+        if args.prune:
+            return _prune_closed(snoozes, save_snoozes, console, err)
         return _list_snoozes(snoozes, now, console)
     except (SnoozeError, GhError) as exc:
         err.print(f"[red]Error:[/red] {exc}")
@@ -505,19 +540,25 @@ def _do_unhide(
     return 1 if failures else 0
 
 
-def _prune_hidden(hidden: dict[str, HideEntry], console: Console, err: Console) -> int:
-    """Drop the entries of hidden PRs that are no longer open (``hide --prune``).
+def _prune_closed[E](
+    entries: dict[str, E],
+    save: Callable[[dict[str, E]], None],
+    console: Console,
+    err: Console,
+) -> int:
+    """Drop the entries whose PR is no longer open (``hide``/``snooze --prune``).
 
-    A hide has no expiry, so closed and merged PRs would accumulate in the
-    store forever; they never show anyway (the searches only return open
-    PRs), so the clean-up is an explicit, network-bound command rather than
-    something the view path pays for. Each entry is looked up on its own;
-    one that cannot be inspected is kept and reported — an entry may only
-    be dropped on positive evidence that its PR is gone.
+    Neither a hide nor an open-ended snooze expires, so closed and merged PRs
+    would accumulate in the store forever; they never show anyway (the
+    searches only return open PRs), so the clean-up is an explicit,
+    network-bound command rather than something the view path pays for.
+    Each entry is looked up on its own; one that cannot be inspected is kept
+    and reported — an entry may only be dropped on positive evidence that its
+    PR is gone.
     """
     pruned: list[str] = []
     failures: list[str] = []
-    for url in sorted(hidden):
+    for url in sorted(entries):
         try:
             with err.status(f"Checking {escape(url)}…", spinner="dots"):
                 pr = fetch_pr(url)
@@ -525,10 +566,10 @@ def _prune_hidden(hidden: dict[str, HideEntry], console: Console, err: Console) 
             failures.append(f"{url}: {exc}")
             continue
         if pr.state and pr.state != "OPEN":
-            del hidden[url]
+            del entries[url]
             pruned.append(f"{url} [dim]({pr.state.lower()})[/dim]")
     if pruned:
-        save_hidden(hidden)
+        save(entries)
         for line in pruned:
             console.print(f"Pruned {line}")
     else:
@@ -564,7 +605,7 @@ def _run_hide_command(args: argparse.Namespace, console: Console, err: Console) 
         if args.refs:
             return _do_hide(args, hidden, datetime.now(UTC), console, err)
         if args.prune:
-            return _prune_hidden(hidden, console, err)
+            return _prune_closed(hidden, save_hidden, console, err)
         return _list_hidden(hidden, console)
     except (HideError, SnoozeError, GhError) as exc:
         err.print(f"[red]Error:[/red] {exc}")
@@ -730,10 +771,12 @@ def main(argv: list[str] | None = None) -> int:
     snooze_cmd = commands.add_parser(
         "snooze",
         parents=[common],
-        help="hide PRs from the attention view (with no arguments: list snoozed PRs)",
-        description="Hide one or more PRs from the attention view for --for's "
-        "duration, or until they get new commits or their status changes. "
-        "With no PR arguments, list the snoozed PRs instead.",
+        help="hide PRs from the attention view until they change (with no "
+        "arguments: list snoozed PRs)",
+        description="Hide one or more PRs from the attention view until they "
+        "get new commits or their status changes — or, with --for, until a "
+        "fixed window elapses, whichever comes first. With no PR arguments, "
+        "list the snoozed PRs instead.",
     )
     snooze_cmd.add_argument(
         "refs",
@@ -746,9 +789,15 @@ def main(argv: list[str] | None = None) -> int:
         "--for",
         dest="snooze_for",
         metavar="DURATION",
-        help="how long to hide the PRs (e.g. 12h, 3d, 1w; days end at local "
-        f"midnight, so the default {_DEFAULT_SNOOZE_FOR} means tomorrow morning; "
-        "counted in working days when config.json sets skip_weekends)",
+        help="also bring the PRs back after this long (e.g. 12h, 3d, 1w; days "
+        "end at local midnight, so 1d means tomorrow morning; counted in "
+        "working days when config.json sets skip_weekends); without it a "
+        "snooze lasts until the PR's head moves or its status changes",
+    )
+    snooze_cmd.add_argument(
+        "--prune",
+        action="store_true",
+        help="forget snoozed PRs that are closed or merged (looks each one up)",
     )
     unsnooze_cmd = commands.add_parser(
         "unsnooze",
@@ -852,7 +901,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "snooze" and args.snooze_for is not None and not args.refs:
             err.print("[red]Error:[/red] --for requires at least one PR to snooze")
             return 2
-        if args.command == "hide" and args.prune and args.refs:
+        if args.command in ("snooze", "hide") and args.prune and args.refs:
             err.print("[red]Error:[/red] --prune takes no PR arguments")
             return 2
         if args.command == "merge":

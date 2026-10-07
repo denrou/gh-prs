@@ -424,6 +424,29 @@ class TestSnoozeFiltering:
         assert "changed" in captured.err
         assert load_snoozes() == {}
 
+    def test_open_ended_snooze_hides_and_is_not_pruned(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
+        ]
+        entry = make_entry("cafe", None, ["review"])
+        save_snoozes({_SNOOZE_URL: entry})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" not in captured.out
+        assert "1 snoozed PR(s) hidden" in captured.err
+        assert load_snoozes() == {_SNOOZE_URL: entry}
+
+    def test_open_ended_snooze_lifts_on_reason_change(self, fake_backend, capsys):
+        fake_backend["prs"] = [
+            _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"ready"})
+        ]
+        save_snoozes({_SNOOZE_URL: make_entry("cafe", None, ["review"])})
+        assert cli.main(["--no-color"]) == 0
+        captured = capsys.readouterr()
+        assert "PR 1" in captured.out
+        assert "changed" in captured.err  # wraps at the console width
+        assert load_snoozes() == {}
+
     def test_unchanged_reasons_stay_hidden(self, fake_backend, capsys):
         fake_backend["prs"] = [
             _pr(1, url=_SNOOZE_URL, head_ref_oid="cafe", attention_reasons={"review"})
@@ -660,17 +683,24 @@ class TestMuteFiltering:
         assert "muted" not in captured.err
 
 
+_OTHER_SNOOZE_URL = "https://github.com/acme/widgets/pull/2"
+
+
 class TestSnoozeActions:
     @pytest.fixture(autouse=True)
     def stub_attention_fetch(self, monkeypatch):
         """Snoozing fetches the attention view to capture reasons; stub it so
-        these tests neither hit the network nor need a live gh. Individual
-        tests override cli.fetch_prs to exercise reason capture.
+        these tests neither hit the network nor need a live gh. The two PRs
+        the tests snooze are in the view (an open-ended snooze requires it);
+        individual tests override cli.fetch_prs to exercise reason capture.
         """
         monkeypatch.setattr(
             cli,
             "fetch_prs",
-            lambda qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False: [],
+            lambda qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False: [
+                _pr(1, url=_SNOOZE_URL, attention_reasons={"review"}),
+                _pr(2, url=_OTHER_SNOOZE_URL, attention_reasons={"review"}),
+            ],
         )
 
     def test_snooze_normalizes_url_and_records_head_oid(self, monkeypatch, capsys):
@@ -680,9 +710,73 @@ class TestSnoozeActions:
         assert entry["oid"] == "cafe123"
         assert "Snoozed" in capsys.readouterr().out
 
-    def test_snooze_defaults_to_the_next_morning(self, monkeypatch):
+    def test_snooze_defaults_to_open_ended(self, monkeypatch, capsys):
+        # No --for: no window, lifted only by the head or the reasons.
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
-        assert cli.main(["snooze", _SNOOZE_URL]) == 0
+        assert cli.main(["snooze", _SNOOZE_URL, "--no-color"]) == 0
+        entry = load_snoozes()[_SNOOZE_URL]
+        assert entry["until"] is None
+        assert entry["reasons"] == ["review"]
+        # The line wraps at the console width; match words only this path emits.
+        out = capsys.readouterr().out
+        assert "Snoozed" in out and "until its head moves" in out
+
+    def test_open_ended_snooze_needs_the_pr_in_the_attention_view(
+        self, monkeypatch, capsys
+    ):
+        # With no window to fall back on, an entry without reasons would hide
+        # the PR on its head alone for good — refused per ref, like a bad ref.
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        monkeypatch.setattr(
+            cli,
+            "fetch_prs",
+            lambda qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False: [
+                _pr(2, url=_OTHER_SNOOZE_URL, attention_reasons={"review"})
+            ],
+        )
+        assert cli.main(["snooze", _SNOOZE_URL, _OTHER_SNOOZE_URL]) == 1
+        assert set(load_snoozes()) == {_OTHER_SNOOZE_URL}
+        err = capsys.readouterr().err
+        assert "not in your attention view" in err
+        assert "pass --for" in err
+
+    def test_open_ended_snooze_aborts_when_attention_state_is_unreadable(
+        self, monkeypatch, capsys
+    ):
+        def boom(
+            qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False
+        ):
+            raise GhError("token expired")
+
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        monkeypatch.setattr(cli, "fetch_prs", boom)
+        assert cli.main(["snooze", _SNOOZE_URL]) == 1
+        assert load_snoozes() == {}
+        err = capsys.readouterr().err
+        assert "token expired" in err
+        assert "pass --for" in err
+
+    def test_windowed_snooze_survives_unreadable_attention_state(
+        self, monkeypatch, capsys
+    ):
+        # The window is a fallback, so a windowed snooze degrades with a
+        # warning instead of aborting.
+        def boom(
+            qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False
+        ):
+            raise GhError("token expired")
+
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        monkeypatch.setattr(cli, "fetch_prs", boom)
+        assert cli.main(["snooze", _SNOOZE_URL, "--for", "1d"]) == 0
+        entry = load_snoozes()[_SNOOZE_URL]
+        assert entry["until"] is not None
+        assert "reasons" not in entry
+        assert "snoozing without it" in capsys.readouterr().err
+
+    def test_snooze_for_one_day_ends_the_next_morning(self, monkeypatch):
+        monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
+        assert cli.main(["snooze", _SNOOZE_URL, "--for", "1d"]) == 0
         until = datetime.fromisoformat(load_snoozes()[_SNOOZE_URL]["until"])
         assert until == _local_midnight(add_days(date.today(), 1))
 
@@ -787,9 +881,8 @@ class TestSnoozeActions:
 
     def test_snooze_multiple_refs(self, monkeypatch):
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe")
-        other = "https://github.com/acme/widgets/pull/2"
-        assert cli.main(["snooze", _SNOOZE_URL, other]) == 0
-        assert set(load_snoozes()) == {_SNOOZE_URL, other}
+        assert cli.main(["snooze", _SNOOZE_URL, _OTHER_SNOOZE_URL]) == 0
+        assert set(load_snoozes()) == {_SNOOZE_URL, _OTHER_SNOOZE_URL}
 
     def test_snooze_partial_failure_records_good_refs(self, monkeypatch, capsys):
         # A bad ref is reported and skipped; the good one is still snoozed.
@@ -829,18 +922,23 @@ class TestSnoozeActions:
             qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False
         ):
             seen["skip_weekends"] = skip_weekends
-            return []
+            return [_pr(1, url=_SNOOZE_URL, attention_reasons={"review"})]
 
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
         monkeypatch.setattr(cli, "fetch_prs", fake_fetch)
         assert cli.main(["snooze", _SNOOZE_URL]) == 0
         assert seen["skip_weekends"] is True
 
-    def test_snooze_absent_pr_records_no_reasons(self, monkeypatch):
-        # The autouse stub returns no PRs, so there are no reasons to attach;
-        # the entry falls back to the head-and-window rule alone.
+    def test_windowed_snooze_of_absent_pr_records_no_reasons(self, monkeypatch):
+        # Not in the attention view, so there are no reasons to attach; a
+        # windowed entry falls back to the head-and-window rule alone.
         monkeypatch.setattr(cli, "fetch_pr_head", lambda url: "cafe123")
-        assert cli.main(["snooze", _SNOOZE_URL]) == 0
+        monkeypatch.setattr(
+            cli,
+            "fetch_prs",
+            lambda qualifiers=None, on_warning=None, stale_after=None, skip_weekends=False: [],
+        )
+        assert cli.main(["snooze", _SNOOZE_URL, "--for", "1d"]) == 0
         assert "reasons" not in load_snoozes()[_SNOOZE_URL]
 
     def test_unsnooze_removes_entry(self, capsys):
@@ -888,6 +986,56 @@ class TestSnoozeActions:
         save_snoozes({_SNOOZE_URL: _entry("cafe", hours=-1)})
         assert cli.main(["snooze", "--no-color"]) == 0
         assert "expired" in capsys.readouterr().out
+
+    def test_bare_snooze_describes_open_ended_entries(self, capsys):
+        save_snoozes({_SNOOZE_URL: make_entry("cafe123deadbeef", None, ["review"])})
+        assert cli.main(["snooze", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        # Wrapped at the console width and dim-styled, so match the pieces.
+        assert "until head moving off cafe123deadb" in out
+        assert "status changing" in out
+        assert "expired" not in out
+
+    def test_snooze_prune_drops_closed_and_keeps_open(self, monkeypatch, capsys):
+        save_snoozes(
+            {
+                _SNOOZE_URL: make_entry("cafe", None, ["review"]),
+                _OTHER_SNOOZE_URL: make_entry("beef", None, ["review"]),
+            }
+        )
+        states = {_SNOOZE_URL: "OPEN", _OTHER_SNOOZE_URL: "MERGED"}
+        monkeypatch.setattr(
+            cli, "fetch_pr", lambda url: _pr(1, url=url, state=states[url])
+        )
+        assert cli.main(["snooze", "--prune", "--no-color"]) == 0
+        assert set(load_snoozes()) == {_SNOOZE_URL}
+        out = capsys.readouterr().out
+        assert _OTHER_SNOOZE_URL in out and "merged" in out
+
+    def test_snooze_prune_keeps_entries_it_cannot_inspect(self, monkeypatch, capsys):
+        save_snoozes(
+            {
+                _SNOOZE_URL: make_entry("cafe", None, ["review"]),
+                _OTHER_SNOOZE_URL: make_entry("beef", None, ["review"]),
+            }
+        )
+
+        def fake_fetch_pr(url):
+            if url == _OTHER_SNOOZE_URL:
+                return _pr(2, url=url, state="")
+            raise GhError("boom")
+
+        monkeypatch.setattr(cli, "fetch_pr", fake_fetch_pr)
+        assert cli.main(["snooze", "--prune", "--no-color"]) == 1
+        assert set(load_snoozes()) == {_SNOOZE_URL, _OTHER_SNOOZE_URL}
+        captured = capsys.readouterr()
+        assert "Nothing to prune" in captured.out
+        assert "boom" in captured.err
+
+    def test_snooze_prune_rejects_refs(self, capsys):
+        assert cli.main(["snooze", "--prune", _SNOOZE_URL]) == 2
+        assert "--prune takes no PR arguments" in capsys.readouterr().err
+        assert load_snoozes() == {}
 
     def test_bare_snooze_empty_store_says_so(self, capsys):
         assert cli.main(["snooze", "--no-color"]) == 0
