@@ -1,0 +1,252 @@
+[
+  {
+    "repo": "acme/widgets",
+    "number": 10,
+    "title": "Ship the parser",
+    "author": "me",
+    "url": "https://github.com/acme/widgets/pull/10",
+    "isDraft": false,
+    "reviewDecision": "APPROVED",
+    "checksState": "SUCCESS",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-10",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "author"
+    ],
+    "attentionReasons": [
+      "ready"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 11,
+    "title": "Bump the linter",
+    "author": "me",
+    "url": "https://github.com/acme/widgets/pull/11",
+    "isDraft": false,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "checksState": "FAILURE",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-11",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "author"
+    ],
+    "attentionReasons": [
+      "ci-failed"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 12,
+    "title": "Rework the cache",
+    "author": "me",
+    "url": "https://github.com/acme/widgets/pull/12",
+    "isDraft": false,
+    "reviewDecision": "",
+    "checksState": "",
+    "mergeable": "CONFLICTING",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-12",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "author"
+    ],
+    "attentionReasons": [
+      "conflict"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 15,
+    "title": "Stacked on the parser",
+    "author": "me",
+    "url": "https://github.com/acme/widgets/pull/15",
+    "isDraft": false,
+    "reviewDecision": "APPROVED",
+    "checksState": "",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-15",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": true,
+    "labels": [],
+    "roles": [
+      "author"
+    ],
+    "attentionReasons": [],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 20,
+    "title": "Fix the parser",
+    "author": "alice",
+    "url": "https://github.com/acme/widgets/pull/20",
+    "isDraft": false,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "checksState": "",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-20",
+    "reviewRequestedExplicitly": true,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": true,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "review-requested"
+    ],
+    "attentionReasons": [
+      "review"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 22,
+    "title": "Add retries",
+    "author": "carol",
+    "url": "https://github.com/acme/widgets/pull/22",
+    "isDraft": false,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "checksState": "PENDING",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-22",
+    "reviewRequestedExplicitly": true,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": true,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "review-requested"
+    ],
+    "attentionReasons": [
+      "review"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 21,
+    "title": "Speed up the search",
+    "author": "bob",
+    "url": "https://github.com/acme/widgets/pull/21",
+    "isDraft": false,
+    "reviewDecision": "APPROVED",
+    "checksState": "",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "APPROVED",
+    "myReviewCommit": "old-21",
+    "headRefOid": "head-21",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "reviewed-by"
+    ],
+    "attentionReasons": [
+      "new-commits"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 13,
+    "title": "Document the flags",
+    "author": "me",
+    "url": "https://github.com/acme/widgets/pull/13",
+    "isDraft": false,
+    "reviewDecision": "REVIEW_REQUIRED",
+    "checksState": "",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-13",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "author"
+    ],
+    "attentionReasons": [
+      "stale"
+    ],
+    "updatedAt": "2001-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 16,
+    "title": "Explore a new layout",
+    "author": "me",
+    "url": "https://github.com/acme/widgets/pull/16",
+    "isDraft": true,
+    "reviewDecision": "",
+    "checksState": "",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-16",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "author"
+    ],
+    "attentionReasons": [
+      "stale-draft"
+    ],
+    "updatedAt": "2001-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  }
+]

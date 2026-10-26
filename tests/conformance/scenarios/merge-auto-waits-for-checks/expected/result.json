@@ -1,0 +1,26 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": null,
+    "hidden.json": null,
+    "snooze.json": null
+  },
+  "writes": [
+    [
+      "pr",
+      "review",
+      "--approve",
+      "https://github.com/acme/widgets/pull/22"
+    ],
+    [
+      "pr",
+      "merge",
+      "--squash",
+      "--delete-branch",
+      "--match-head-commit",
+      "head-22",
+      "--auto",
+      "https://github.com/acme/widgets/pull/22"
+    ]
+  ]
+}

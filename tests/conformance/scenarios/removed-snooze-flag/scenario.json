@@ -1,0 +1,8 @@
+{
+  "args": [
+    "--snooze",
+    "20"
+  ],
+  "loose_stderr": true,
+  "gh": {}
+}

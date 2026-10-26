@@ -1,0 +1,11 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": {
+      "stale_after": null
+    },
+    "hidden.json": null,
+    "snooze.json": null
+  },
+  "writes": []
+}

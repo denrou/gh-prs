@@ -1,0 +1,1 @@
+Error: -c/-r/-a, --count, --json and --stale-after do not apply to 'gh prs snooze'

@@ -1,0 +1,10 @@
+{
+  "args": [
+    "unsnooze",
+    "https://github.com/acme/widgets/pull/21"
+  ],
+  "files": {
+    "snooze.json": {}
+  },
+  "gh": {}
+}

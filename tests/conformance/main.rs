@@ -19,10 +19,19 @@
 //!
 //! `files` are written to the config directory before the run (a string is
 //! written verbatim, for corrupt-file cases); `gh` drives the fake `gh`
-//! described in `fake_gh.rs`. The comparison is exact for the exit code, the
-//! store files afterwards and the write calls `gh` received, exact on the
-//! parsed value for `--json`, and whitespace-insensitive for the rest of
-//! stdout and stderr: column spacing is not part of the contract.
+//! described in `fake_gh.rs`. `"loose_stderr": true` skips the stderr
+//! comparison, for usage errors whose wording comes from the argument
+//! parser.
+//!
+//! The comparison is exact for the exit code, the store files afterwards and
+//! the write calls `gh` received, exact on the parsed value for `--json`, and
+//! whitespace-insensitive for the rest of stdout (column spacing is not part
+//! of the contract) and for stderr taken as a whole (nor is where a long
+//! message wraps). Two things that change on every run are
+//! replaced before comparing (and blessing): the temporary directory, by
+//! `$TMP`, and any timestamp dated within a week of today (a hide's `since`,
+//! a `--for` deadline), by `<RECENT>`. Fixtures therefore date their PRs in
+//! 2001 (always stale) or 2099 (always fresh).
 
 // Deliberate: a broken fixture or harness failure should panic loudly.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -122,13 +131,14 @@ fn run_scenario(dir: &Path, target: &Path) -> Result<(), Failed> {
     }
     let output = command.output().unwrap();
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let volatile = Volatile::new(tmp.path());
+    let stdout = volatile.scrub(&String::from_utf8_lossy(&output.stdout));
+    let stderr = volatile.scrub(&String::from_utf8_lossy(&output.stderr));
     let result = json!({
         "exit_code": output.status.code(),
         "files": STORE_FILES
             .iter()
-            .map(|name| (name.to_string(), read_store(&store.join(name))))
+            .map(|name| (name.to_string(), read_store(&store.join(name), &volatile)))
             .collect::<serde_json::Map<_, _>>(),
         "writes": fs::read_to_string(&log)
             .unwrap_or_default()
@@ -166,7 +176,8 @@ fn run_scenario(dir: &Path, target: &Path) -> Result<(), Failed> {
         ));
     }
     let want_stderr = fs::read_to_string(expected.join("stderr")).unwrap();
-    if !same_output(&want_stderr, &stderr, false) {
+    let loose_stderr = scenario["loose_stderr"].as_bool().unwrap_or(false);
+    if !loose_stderr && words(&want_stderr) != words(&stderr) {
         problems.push(format!(
             "stderr differs\n--- expected\n{want_stderr}--- actual\n{stderr}"
         ));
@@ -185,10 +196,71 @@ fn read_json(path: &Path) -> Value {
 
 /// A store file as parsed JSON, its raw text when it isn't JSON, or null
 /// when it doesn't exist.
-fn read_store(path: &Path) -> Value {
+fn read_store(path: &Path, volatile: &Volatile) -> Value {
     match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or(Value::String(text)),
+        Ok(text) => {
+            let text = volatile.scrub(&text);
+            serde_json::from_str(&text).unwrap_or(Value::String(text))
+        }
         Err(_) => Value::Null,
+    }
+}
+
+/// What differs between two runs of the same scenario.
+struct Volatile {
+    tmp: Vec<String>,
+    recent_days: Vec<String>,
+    timestamp: regex::Regex,
+}
+
+impl Volatile {
+    fn new(tmp: &Path) -> Self {
+        let mut paths = vec![tmp.display().to_string()];
+        if let Ok(canonical) = fs::canonicalize(tmp) {
+            paths.push(canonical.display().to_string());
+        }
+        // Longest first, so /private/var/... isn't left half-replaced.
+        paths.sort_by_key(|path| std::cmp::Reverse(path.len()));
+        let now = jiff::Zoned::now();
+        let recent_days = (-8..=8)
+            .flat_map(|offset: i64| {
+                let day = now
+                    .date()
+                    .checked_add(jiff::Span::new().days(offset))
+                    .unwrap();
+                let utc = now
+                    .with_time_zone(jiff::tz::TimeZone::UTC)
+                    .date()
+                    .checked_add(jiff::Span::new().days(offset))
+                    .unwrap();
+                [day.to_string(), utc.to_string()]
+            })
+            .collect();
+        let timestamp = regex::Regex::new(
+            r"(\d{4}-\d{2}-\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?",
+        )
+        .unwrap();
+        Self {
+            tmp: paths,
+            recent_days,
+            timestamp,
+        }
+    }
+
+    fn scrub(&self, text: &str) -> String {
+        let mut text = text.to_owned();
+        for path in &self.tmp {
+            text = text.replace(path.as_str(), "$TMP");
+        }
+        self.timestamp
+            .replace_all(&text, |found: &regex::Captures<'_>| {
+                if self.recent_days.contains(&found[1].to_owned()) {
+                    "<RECENT>".to_owned()
+                } else {
+                    found[0].to_owned()
+                }
+            })
+            .into_owned()
     }
 }
 
@@ -198,6 +270,12 @@ fn same_output(expected: &str, actual: &str, as_json: bool) -> bool {
         return parse(expected).is_some() && parse(expected) == parse(actual);
     }
     normalize(expected) == normalize(actual)
+}
+
+/// stderr as one run of words: the Python version wrapped long messages to
+/// the console width, the Rust one leaves that to the terminal.
+fn words(text: &str) -> Vec<&str> {
+    text.split_whitespace().collect()
 }
 
 /// Runs of whitespace collapsed to one space, trailing blank lines dropped.

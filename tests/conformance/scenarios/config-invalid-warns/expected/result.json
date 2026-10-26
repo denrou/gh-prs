@@ -1,0 +1,11 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": {
+      "skip_weekends": 1
+    },
+    "hidden.json": null,
+    "snooze.json": null
+  },
+  "writes": []
+}

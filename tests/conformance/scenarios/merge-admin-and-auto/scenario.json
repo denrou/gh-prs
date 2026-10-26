@@ -1,0 +1,10 @@
+{
+  "args": [
+    "merge",
+    "10",
+    "--admin",
+    "--auto"
+  ],
+  "loose_stderr": true,
+  "gh": {}
+}

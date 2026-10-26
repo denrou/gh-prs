@@ -17,6 +17,33 @@ pub enum Reported<T> {
     Missing,
 }
 
+impl<T: GraphqlEnum> Reported<T> {
+    /// The value as GitHub spells it, `""` when missing: what `--json` prints.
+    #[must_use]
+    pub fn graphql_name(&self) -> &str {
+        match self {
+            Self::Known(value) => value.graphql_name(),
+            Self::Unrecognised(value) => value,
+            Self::Missing => "",
+        }
+    }
+}
+
+/// A GitHub enum, read from and printed as its GraphQL name. One table per
+/// enum, so parsing and `--json` can't drift apart.
+pub trait GraphqlEnum: Copy + 'static {
+    const ALL: &'static [Self];
+
+    fn graphql_name(self) -> &'static str;
+
+    fn from_graphql(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|value| value.graphql_name() == name)
+    }
+}
+
 /// `PullRequest.state`. Searches only return open PRs; the merge preflight
 /// and the prune commands are the ones that see the others.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +90,75 @@ pub enum Checks {
     Success,
     Failure,
     Pending,
+}
+
+impl GraphqlEnum for PrState {
+    const ALL: &'static [Self] = &[Self::Open, Self::Closed, Self::Merged];
+
+    fn graphql_name(self) -> &'static str {
+        match self {
+            Self::Open => "OPEN",
+            Self::Closed => "CLOSED",
+            Self::Merged => "MERGED",
+        }
+    }
+}
+
+impl GraphqlEnum for Mergeable {
+    const ALL: &'static [Self] = &[Self::Mergeable, Self::Conflicting, Self::Unknown];
+
+    fn graphql_name(self) -> &'static str {
+        match self {
+            Self::Mergeable => "MERGEABLE",
+            Self::Conflicting => "CONFLICTING",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+impl GraphqlEnum for ReviewDecision {
+    const ALL: &'static [Self] = &[Self::Approved, Self::ChangesRequested, Self::ReviewRequired];
+
+    fn graphql_name(self) -> &'static str {
+        match self {
+            Self::Approved => "APPROVED",
+            Self::ChangesRequested => "CHANGES_REQUESTED",
+            Self::ReviewRequired => "REVIEW_REQUIRED",
+        }
+    }
+}
+
+impl GraphqlEnum for ReviewState {
+    const ALL: &'static [Self] = &[
+        Self::Approved,
+        Self::ChangesRequested,
+        Self::Commented,
+        Self::Dismissed,
+        Self::Pending,
+    ];
+
+    fn graphql_name(self) -> &'static str {
+        match self {
+            Self::Approved => "APPROVED",
+            Self::ChangesRequested => "CHANGES_REQUESTED",
+            Self::Commented => "COMMENTED",
+            Self::Dismissed => "DISMISSED",
+            Self::Pending => "PENDING",
+        }
+    }
+}
+
+impl Checks {
+    /// The normalized rollup as `--json` prints it; `""` is no checks.
+    #[must_use]
+    pub const fn graphql_name(self) -> &'static str {
+        match self {
+            Self::NoneConfigured => "",
+            Self::Success => "SUCCESS",
+            Self::Failure => "FAILURE",
+            Self::Pending => "PENDING",
+        }
+    }
 }
 
 /// A commit oid, never empty: an empty one from GitHub parses as `None`.
@@ -320,6 +416,32 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(names, sorted);
         assert!(Reason::ALL.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    fn roundtrips<T: GraphqlEnum + PartialEq + std::fmt::Debug>(count: usize) {
+        assert_eq!(T::ALL.len(), count, "ALL must list every variant");
+        for value in T::ALL {
+            assert_eq!(T::from_graphql(value.graphql_name()), Some(*value));
+        }
+    }
+
+    #[test]
+    fn graphql_names_roundtrip() {
+        // The counts are the variant counts: a variant missing from ALL
+        // would parse as unrecognised.
+        roundtrips::<PrState>(3);
+        roundtrips::<Mergeable>(3);
+        roundtrips::<ReviewDecision>(3);
+        roundtrips::<ReviewState>(5);
+        assert_eq!(
+            Reported::Known(Mergeable::Unknown).graphql_name(),
+            "UNKNOWN"
+        );
+        assert_eq!(
+            Reported::<Mergeable>::Unrecognised("MAYBE".to_owned()).graphql_name(),
+            "MAYBE"
+        );
+        assert_eq!(Reported::<Mergeable>::Missing.graphql_name(), "");
     }
 
     #[test]

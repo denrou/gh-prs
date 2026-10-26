@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-c",
+    "--count"
+  ],
+  "gh": {
+    "viewer": "me",
+    "issueCounts": {
+      "author": 7
+    }
+  }
+}

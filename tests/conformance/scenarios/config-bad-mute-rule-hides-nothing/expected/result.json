@@ -1,0 +1,21 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": {
+      "mute": [
+        {
+          "author": "alice"
+        },
+        {
+          "author": "bob",
+          "unless_label": [
+            "x"
+          ]
+        }
+      ]
+    },
+    "hidden.json": null,
+    "snooze.json": null
+  },
+  "writes": []
+}

@@ -1,0 +1,9 @@
+{
+  "args": [
+    "-c",
+    "--no-color"
+  ],
+  "gh": {
+    "viewer": "me"
+  }
+}

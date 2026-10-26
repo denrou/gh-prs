@@ -1,0 +1,19 @@
+{
+  "exit_code": 1,
+  "files": {
+    "config.json": null,
+    "hidden.json": null,
+    "snooze.json": null
+  },
+  "writes": [
+    [
+      "pr",
+      "merge",
+      "--squash",
+      "--delete-branch",
+      "--match-head-commit",
+      "head-10",
+      "https://github.com/acme/widgets/pull/10"
+    ]
+  ]
+}

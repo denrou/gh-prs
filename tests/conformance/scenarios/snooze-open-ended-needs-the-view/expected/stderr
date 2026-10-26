@@ -1,0 +1,2 @@
+Error: could not read attention state (Some PR searches failed; results would be incomplete:
+  Search 'reviewed-by' failed: HTTP 502); an open-ended snooze needs it — pass --for to snooze for a fixed window instead

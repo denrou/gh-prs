@@ -1,0 +1,21 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": {
+      "mute": [
+        {
+          "author": "renovate",
+          "repos": [
+            "acme/widgets"
+          ],
+          "unless_labels": [
+            "S-Python"
+          ]
+        }
+      ]
+    },
+    "hidden.json": null,
+    "snooze.json": null
+  },
+  "writes": []
+}

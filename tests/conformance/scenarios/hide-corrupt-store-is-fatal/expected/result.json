@@ -1,0 +1,11 @@
+{
+  "exit_code": 1,
+  "files": {
+    "config.json": null,
+    "hidden.json": {
+      "u": {}
+    },
+    "snooze.json": null
+  },
+  "writes": []
+}

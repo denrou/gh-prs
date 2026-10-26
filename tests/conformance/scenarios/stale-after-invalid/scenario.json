@@ -1,0 +1,196 @@
+{
+  "args": [
+    "--stale-after",
+    "soon"
+  ],
+  "gh": {
+    "viewer": "me",
+    "searches": {
+      "author": [
+        "A_READY",
+        "A_CI",
+        "A_CONFLICT",
+        "A_STALE",
+        "A_STACKED",
+        "A_DRAFT"
+      ],
+      "review-requested": [
+        "R_REVIEW",
+        "R_PENDING"
+      ],
+      "reviewed-by": [
+        "R_NEWCOMMITS"
+      ]
+    },
+    "nodes": {
+      "A_READY": {
+        "number": 10,
+        "title": "Ship the parser",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "APPROVED",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "SUCCESS"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "A_CI": {
+        "number": 11,
+        "title": "Bump the linter",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "FAILURE"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "A_CONFLICT": {
+        "number": 12,
+        "title": "Rework the cache",
+        "author": {
+          "login": "me"
+        },
+        "mergeable": "CONFLICTING"
+      },
+      "A_STALE": {
+        "number": 13,
+        "title": "Document the flags",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "updatedAt": "2001-01-01T00:00:00Z"
+      },
+      "A_STACKED": {
+        "number": 15,
+        "title": "Stacked on the parser",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "APPROVED",
+        "baseRef": {
+          "associatedPullRequests": {
+            "totalCount": 1
+          }
+        }
+      },
+      "A_DRAFT": {
+        "number": 16,
+        "title": "Explore a new layout",
+        "author": {
+          "login": "me"
+        },
+        "isDraft": true,
+        "updatedAt": "2001-01-01T00:00:00Z"
+      },
+      "R_REVIEW": {
+        "number": 20,
+        "title": "Fix the parser",
+        "author": {
+          "login": "alice"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "me"
+              }
+            }
+          ]
+        }
+      },
+      "R_NEWCOMMITS": {
+        "number": 21,
+        "title": "Speed up the search",
+        "author": {
+          "login": "bob"
+        },
+        "reviewDecision": "APPROVED",
+        "latestReviews": {
+          "nodes": [
+            {
+              "author": {
+                "login": "me"
+              },
+              "state": "APPROVED",
+              "commit": {
+                "oid": "old-21"
+              }
+            }
+          ]
+        }
+      },
+      "R_PENDING": {
+        "number": 22,
+        "title": "Add retries",
+        "author": {
+          "login": "carol"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "PENDING"
+                }
+              }
+            }
+          ]
+        },
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "me"
+              }
+            }
+          ]
+        }
+      },
+      "R_OBJECTED": {
+        "number": 23,
+        "title": "Drop the cache",
+        "author": {
+          "login": "dave"
+        },
+        "reviewDecision": "CHANGES_REQUESTED"
+      },
+      "X_ELSEWHERE": {
+        "number": 30,
+        "title": "Not in any search",
+        "author": {
+          "login": "erin"
+        }
+      },
+      "X_MERGED": {
+        "number": 31,
+        "title": "Already merged",
+        "author": {
+          "login": "erin"
+        },
+        "state": "MERGED"
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+Warning: could not read attention state (Some PR searches failed; results would be incomplete:
+  Search 'reviewed-by' failed: HTTP 502); snoozing without it

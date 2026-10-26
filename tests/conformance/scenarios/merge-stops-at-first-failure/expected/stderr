@@ -1,0 +1,2 @@
+Error: Merging https://github.com/acme/widgets/pull/10 failed: GraphQL: Head branch was modified
+Stopped; not attempted: acme/widgets#20

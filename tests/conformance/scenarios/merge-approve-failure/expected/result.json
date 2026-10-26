@@ -1,0 +1,16 @@
+{
+  "exit_code": 1,
+  "files": {
+    "config.json": null,
+    "hidden.json": null,
+    "snooze.json": null
+  },
+  "writes": [
+    [
+      "pr",
+      "review",
+      "--approve",
+      "https://github.com/acme/widgets/pull/20"
+    ]
+  ]
+}

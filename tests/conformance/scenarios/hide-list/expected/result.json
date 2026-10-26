@@ -1,0 +1,16 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": null,
+    "hidden.json": {
+      "https://github.com/acme/widgets/pull/20": {
+        "since": "2026-01-01T09:30:00+00:00"
+      },
+      "https://github.com/acme/widgets/pull/21": {
+        "since": "garbage"
+      }
+    },
+    "snooze.json": null
+  },
+  "writes": []
+}

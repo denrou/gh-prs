@@ -1,0 +1,19 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": {
+      "mute": [
+        {
+          "author": "alice"
+        }
+      ]
+    },
+    "hidden.json": {
+      "https://github.com/acme/widgets/pull/22": {
+        "since": "2026-01-01T00:00:00+00:00"
+      }
+    },
+    "snooze.json": null
+  },
+  "writes": []
+}

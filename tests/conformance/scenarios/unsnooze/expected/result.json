@@ -1,0 +1,17 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": null,
+    "hidden.json": null,
+    "snooze.json": {
+      "https://github.com/acme/widgets/pull/21": {
+        "oid": "head-21",
+        "reasons": [
+          "review"
+        ],
+        "until": null
+      }
+    }
+  },
+  "writes": []
+}

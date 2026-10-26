@@ -1,0 +1,3 @@
+Error: Some PR lookups failed; results would be incomplete:
+  PR lookup 1/2 failed: HTTP 502: Bad Gateway
+  PR lookup 2/2 failed: HTTP 502: Bad Gateway

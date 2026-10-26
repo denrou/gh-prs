@@ -1,0 +1,1 @@
+Error: --snooze was replaced by a subcommand: try 'gh prs snooze <pr>...' (see --help)

@@ -1,0 +1,1 @@
+Error: $TMP/config/gh-prs/snooze.json has an unexpected shape (want {url: {oid, until, reasons?}}; an entry with a null until must have reasons)

@@ -20,7 +20,7 @@ uv add --dev <pkg>          # Add dev dependency
 cargo fmt                   # Format
 cargo clippy --all-targets -- -D warnings  # Lint
 cargo test --lib            # Unit tests
-cargo test --test conformance              # Conformance suite vs the Rust binary (red until step 6)
+cargo test --test conformance              # Conformance suite vs the Rust binary
 GH_PRS_BIN=.venv/bin/gh-prs cargo test --test conformance  # Same suite vs Python
 BLESS=1 GH_PRS_BIN=.venv/bin/gh-prs cargo test --test conformance  # Rewrite expected/ from Python, then review the diff
 ```

@@ -1,0 +1,16 @@
+Needs your review (2)
+widgets  #20  Fix the parser  alice  2099-01-01
+widgets  #22  Add retries     carol  2099-01-01
+
+New commits since your review (1)
+widgets  #21  Speed up the search  bob  2099-01-01
+
+Ready to ship (1)
+widgets  #10  Ship the parser  2099-01-01
+
+CI failed (1)
+widgets  #11  Bump the linter  2099-01-01
+
+Conflicts to resolve (1)
+widgets  #12  Rework the cache  2099-01-01
+

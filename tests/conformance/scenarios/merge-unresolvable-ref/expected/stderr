@@ -1,0 +1,2 @@
+Error: 99: Lookup of PR 99 in acme/widgets failed: GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)
+Nothing was merged.

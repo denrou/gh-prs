@@ -1,0 +1,25 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": null,
+    "hidden.json": null,
+    "snooze.json": {
+      "https://github.com/acme/widgets/pull/1": {
+        "oid": "abcdef1234567890",
+        "reasons": [
+          "review"
+        ],
+        "until": null
+      },
+      "https://github.com/acme/widgets/pull/2": {
+        "oid": "0123456789abcdef",
+        "until": "2099-01-01T00:00:00+00:00"
+      },
+      "https://github.com/acme/widgets/pull/3": {
+        "oid": "fedcba",
+        "until": "2001-01-01T00:00:00+00:00"
+      }
+    }
+  },
+  "writes": []
+}

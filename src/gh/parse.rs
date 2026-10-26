@@ -18,8 +18,8 @@ use serde::Deserialize;
 
 use super::fetch::{LABEL_PAGE_LIMIT, REVIEW_PAGE_LIMIT};
 use crate::pr::{
-    ChangesRequested, Checks, Labels, Mergeable, MyReview, Oid, PrState, PullRequest, Reported,
-    ReviewDecision, ReviewState,
+    ChangesRequested, Checks, GraphqlEnum, Labels, MyReview, Oid, PullRequest, Reported,
+    ReviewState,
 };
 
 #[derive(Deserialize)]
@@ -166,12 +166,7 @@ pub(super) fn to_pull_request(
         .flatten()
         .find(|review| is_viewer(review.author.as_ref()))
         .map(|review| MyReview {
-            state: reported(
-                review.state.as_deref(),
-                "review state",
-                review_state,
-                &mut report,
-            ),
+            state: reported(review.state.as_deref(), "review state", &mut report),
             commit: oid(review.commit.as_ref()),
         });
 
@@ -185,12 +180,7 @@ pub(super) fn to_pull_request(
         match review {
             None => standing.push(None),
             Some(review) => {
-                let state = reported(
-                    review.state.as_deref(),
-                    "review state",
-                    review_state,
-                    &mut report,
-                );
+                let state = reported(review.state.as_deref(), "review state", &mut report);
                 if state == Reported::Known(ReviewState::ChangesRequested) {
                     standing.push(oid(review.commit.as_ref()));
                 }
@@ -242,22 +232,16 @@ pub(super) fn to_pull_request(
         title: strip_control_characters(&raw.title),
         author: login(raw.author.as_ref()).map(str::to_owned),
         url: raw.url.clone().unwrap_or_default(),
-        state: reported(raw.state.as_deref(), "state", pr_state, &mut report),
+        state: reported(raw.state.as_deref(), "state", &mut report),
         updated_at: raw.updated_at.clone().unwrap_or_default(),
         created_at: raw.created_at.clone().unwrap_or_default(),
         is_draft: raw.is_draft.unwrap_or(false),
         review_decision: reported(
             raw.review_decision.as_deref(),
             "reviewDecision",
-            review_decision,
             &mut report,
         ),
-        mergeable: reported(
-            raw.mergeable.as_deref(),
-            "mergeable",
-            mergeable,
-            &mut report,
-        ),
+        mergeable: reported(raw.mergeable.as_deref(), "mergeable", &mut report),
         checks: checks(raw.commits.as_ref(), &mut report),
         my_review,
         head: raw.head_ref_oid.as_deref().and_then(Oid::new),
@@ -327,15 +311,14 @@ fn login(actor: Option<&Actor>) -> Option<&str> {
 
 /// An enum field: `None` and `""` are missing, an unknown value is kept and
 /// reported.
-fn reported<T>(
+fn reported<T: GraphqlEnum>(
     value: Option<&str>,
     field: &'static str,
-    known: fn(&str) -> Option<T>,
     report: &mut impl FnMut(&'static str, &str),
 ) -> Reported<T> {
     match value.filter(|v| !v.is_empty()) {
         None => Reported::Missing,
-        Some(value) => known(value).map_or_else(
+        Some(value) => T::from_graphql(value).map_or_else(
             || {
                 report(field, value);
                 Reported::Unrecognised(value.to_owned())
@@ -343,44 +326,6 @@ fn reported<T>(
             Reported::Known,
         ),
     }
-}
-
-fn pr_state(value: &str) -> Option<PrState> {
-    Some(match value {
-        "OPEN" => PrState::Open,
-        "CLOSED" => PrState::Closed,
-        "MERGED" => PrState::Merged,
-        _ => return None,
-    })
-}
-
-fn mergeable(value: &str) -> Option<Mergeable> {
-    Some(match value {
-        "MERGEABLE" => Mergeable::Mergeable,
-        "CONFLICTING" => Mergeable::Conflicting,
-        "UNKNOWN" => Mergeable::Unknown,
-        _ => return None,
-    })
-}
-
-fn review_decision(value: &str) -> Option<ReviewDecision> {
-    Some(match value {
-        "APPROVED" => ReviewDecision::Approved,
-        "CHANGES_REQUESTED" => ReviewDecision::ChangesRequested,
-        "REVIEW_REQUIRED" => ReviewDecision::ReviewRequired,
-        _ => return None,
-    })
-}
-
-fn review_state(value: &str) -> Option<ReviewState> {
-    Some(match value {
-        "APPROVED" => ReviewState::Approved,
-        "CHANGES_REQUESTED" => ReviewState::ChangesRequested,
-        "COMMENTED" => ReviewState::Commented,
-        "DISMISSED" => ReviewState::Dismissed,
-        "PENDING" => ReviewState::Pending,
-        _ => return None,
-    })
 }
 
 fn oid(commit: Option<&CommitRef>) -> Option<Oid> {
@@ -402,6 +347,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::pr::{Mergeable, PrState, ReviewDecision};
 
     /// A GraphQL node as hydration returns it.
     fn node(overrides: Value) -> Value {
