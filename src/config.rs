@@ -19,7 +19,6 @@
 //! PRs than the one the user wrote down).
 
 use std::fmt;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -27,7 +26,7 @@ use serde_json::{Map, Value};
 use crate::attention::DEFAULT_STALE_AFTER;
 use crate::duration::{CALENDAR_WEEK_DAYS, Duration, parse_duration};
 use crate::mute::MuteRule;
-use crate::store::store_path;
+use crate::store::{read_json, store_path};
 
 /// Days a `w` stands for once weekends stop counting. Five, not seven, so
 /// "give it a week" still names the same weekday a week later.
@@ -94,14 +93,9 @@ pub fn config_path() -> PathBuf {
 /// error; the caller (the view) decides to warn and use the defaults.
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     let fail = |detail: String| ConfigError(format!("{}{detail}", path.display()));
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Config::default()),
-        Err(e) => return Err(ConfigError(format!("cannot read {}: {e}", path.display()))),
+    let Some(data) = read_json(path).map_err(ConfigError)? else {
+        return Ok(Config::default());
     };
-    let text = String::from_utf8(bytes).map_err(|e| fail(format!(" is not valid UTF-8: {e}")))?;
-    let data: Value =
-        serde_json::from_str(&text).map_err(|e| fail(format!(" is not valid JSON: {e}")))?;
     let Value::Object(data) = data else {
         return Err(fail(
             " has an unexpected shape (want a JSON object)".to_owned(),
