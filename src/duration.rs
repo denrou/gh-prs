@@ -10,8 +10,6 @@
 //!
 //! Pure calendar arithmetic, no I/O: the local time zone is a parameter.
 
-use std::fmt;
-
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, ToSpan};
@@ -45,16 +43,9 @@ pub struct Duration {
 }
 
 /// A duration string that isn't a positive number of hours, days or weeks.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct DurationError(String);
-
-impl fmt::Display for DurationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for DurationError {}
 
 impl Duration {
     #[must_use]

@@ -61,6 +61,7 @@ users switch versions without migrating anything. So these stay fixed:
 | Colour and terminal detection | `anstream`, `anstyle`             | Already pulled in by clap; strip colour when not a terminal, honour `NO_COLOR`                              |
 | Table layout                  | `unicode-width`, `terminal_size`  | The table is drawn by hand (see Rendering)                                                                  |
 | Spinner                       | `indicatif`                       | On stderr, hidden automatically when stderr is not a terminal                                               |
+| Error types                   | `thiserror`                       | One derive per error type instead of hand-written `Display` and `Error` impls                               |
 | Subprocess timeout            | `wait-timeout`                    | `std::process` has no timeout, and the 60 s one stays                                                       |
 | Tests                         | `libtest-mimic`, `tempfile` (dev) | Data-driven conformance suite                                                                               |
 
@@ -72,8 +73,9 @@ Deliberately left out:
 - **regex.** Two patterns (PR URL, duration) that are easier to read as
   plain parsing code. The PR URL pattern needs a lookahead, which the
   `regex` crate doesn't support anyway.
-- **anyhow and thiserror.** Errors are message carriers (see Errors), and
-  plain types are enough.
+- **anyhow.** It would erase which error happened, and the view needs to
+  know which store failed to choose between degrading and aborting (see
+  Errors).
 - **A rich equivalent.** See Rendering.
 
 ## Layout
@@ -265,8 +267,9 @@ types, so almost none of them change.
 
 ## Errors
 
-One plain error type per domain: `GhError`, `SnoozeError`, `HideError`,
-`ConfigError`, each carrying a message, as in Python. They stay separate on
+One error type per domain: `GhError`, `SnoozeError`, `HideError`,
+`ConfigError`, `DurationError`, each carrying a message, as in Python, and
+derived with `thiserror`. They stay separate on
 purpose. Whether an error degrades (the view warns and shows more) or is
 fatal (a subcommand must not overwrite a store it couldn't read) depends on
 which store failed and where, and separate types make every call site spell
@@ -428,15 +431,16 @@ After upgrading, `brew autoremove` drops the now-orphaned `python@3.14`.
 
 ## Deliberate divergences
 
-| Area                                     | Python                                            | Rust                                                | Why                                                                              |
-| ---------------------------------------- | ------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Unrecognised `reviewDecision` on merge   | passes                                            | blocks                                              | Merge rule: never on uncertain data (see Type model)                             |
-| Unrecognised state of your own review    | never `new-commits`                               | counts as submitted: `new-commits` can fire         | Unknown must never read as nothing to do                                         |
-| A GraphQL field with the wrong JSON type | sometimes read as unknown                         | `GhError`                                           | Contract changes with `gh` surface (see Parsing)                                 |
-| Ctrl-C                                   | prints "Interrupted.", exits `130`                | default SIGINT: the shell reports `130`, no message | No signal-handling crate. Stores are safe either way (write-then-rename)         |
-| `--json` text                            | non-ASCII as `\u` escapes; coloured on a terminal | UTF-8 as is; never coloured                         | Parsed JSON is identical; colouring a scripting interface was a rich side effect |
-| `--snooze`/`--unsnooze`/`--snoozed`      | migration hint, exit `2`                          | clap's unexpected-argument error, exit `2`          | The subcommands replaced them long enough ago                                    |
-| Non-ASCII digits (`٣d`, `…/pull/１２`)   | accepted (Python's `\d` and `int()`)              | rejected                                            | Nobody types them; ASCII-only parsing is simpler to reason about                 |
-| OS and parser error details in messages  | Python's wording (`[Errno 21] Is a directory`)    | Rust's (`Is a directory (os error 21)`)             | The sentence around them is identical; the detail comes from the platform        |
-| Case-insensitive matching (mute rules)   | `str.casefold()`                                  | `str::to_lowercase()`                               | Differs only on characters like `ß`, which no login or repository name contains  |
-| Table spacing and `--help` layout        | rich and argparse                                 | hand-drawn and clap                                 | Not part of the contract                                                         |
+| Area                                                  | Python                                            | Rust                                                | Why                                                                              |
+| ----------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Unrecognised `reviewDecision` on merge                | passes                                            | blocks                                              | Merge rule: never on uncertain data (see Type model)                             |
+| Unrecognised state of your own review                 | never `new-commits`                               | counts as submitted: `new-commits` can fire         | Unknown must never read as nothing to do                                         |
+| A GraphQL field with the wrong JSON type              | sometimes read as unknown                         | `GhError`                                           | Contract changes with `gh` surface (see Parsing)                                 |
+| An enum value GitHub sends that the code doesn't know | silently read as unknown                          | read as unknown, plus one warning per value         | The contract with GitHub changed; the code should catch up                       |
+| Ctrl-C                                                | prints "Interrupted.", exits `130`                | default SIGINT: the shell reports `130`, no message | No signal-handling crate. Stores are safe either way (write-then-rename)         |
+| `--json` text                                         | non-ASCII as `\u` escapes; coloured on a terminal | UTF-8 as is; never coloured                         | Parsed JSON is identical; colouring a scripting interface was a rich side effect |
+| `--snooze`/`--unsnooze`/`--snoozed`                   | migration hint, exit `2`                          | clap's unexpected-argument error, exit `2`          | The subcommands replaced them long enough ago                                    |
+| Non-ASCII digits (`٣d`, `…/pull/１２`)                | accepted (Python's `\d` and `int()`)              | rejected                                            | Nobody types them; ASCII-only parsing is simpler to reason about                 |
+| OS and parser error details in messages               | Python's wording (`[Errno 21] Is a directory`)    | Rust's (`Is a directory (os error 21)`)             | The sentence around them is identical; the detail comes from the platform        |
+| Case-insensitive matching (mute rules)                | `str.casefold()`                                  | `str::to_lowercase()`                               | Differs only on characters like `ß`, which no login or repository name contains  |
+| Table spacing and `--help` layout                     | rich and argparse                                 | hand-drawn and clap                                 | Not part of the contract                                                         |

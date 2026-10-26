@@ -18,7 +18,6 @@
 //! disable the whole list (a partial rule set would hide a different set of
 //! PRs than the one the user wrote down).
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -38,16 +37,9 @@ pub const WORKING_WEEK_DAYS: u32 = 5;
 const MUTE_RULE_KEYS: [&str; 3] = ["author", "unless_labels", "repos"];
 
 /// The config file is unreadable or holds an invalid value.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct ConfigError(String);
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ConfigError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {

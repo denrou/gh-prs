@@ -11,7 +11,6 @@
 //! Only the attention view (its table and `--count`) consults it.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
@@ -22,16 +21,9 @@ use crate::pr::PullRequest;
 use crate::store::{format_timestamp, read_json, store_path, write_json};
 
 /// The store is unreadable or unwritable.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct HideError(String);
-
-impl fmt::Display for HideError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for HideError {}
 
 /// One hidden PR: when it was hidden, informational only.
 #[derive(Clone, Debug, PartialEq, Eq)]
