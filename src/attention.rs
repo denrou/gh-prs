@@ -22,6 +22,10 @@ use crate::pr::{
 const WEEK_EPOCH: Date = date(1970, 1, 5);
 const SATURDAY: i64 = 5;
 
+/// Default silence before an authored PR is nudged as `stale` or
+/// `stale-draft`; `config.json` and `--stale-after` override it.
+pub const DEFAULT_STALE_AFTER: Duration = Duration::days(3);
+
 /// The staleness clock. Without one, neither `stale` nor `stale-draft` can
 /// fire: that is how a disabled threshold (`stale_after: null`) reads.
 #[derive(Clone, Debug)]

@@ -4,5 +4,9 @@
 //! binary in `main.rs` stays a thin shell over this library.
 
 pub mod attention;
+pub mod config;
 pub mod duration;
+pub mod merge;
+pub mod mute;
 pub mod pr;
+pub mod store;

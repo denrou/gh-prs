@@ -16,6 +16,7 @@ harness = false
 
 [dependencies]
 jiff = "0.2.38"
+serde_json = "1.0.154"
 
 [dev-dependencies]
 jiff = { version = "0.2.38", features = ["tzdb-bundle-always"] }
