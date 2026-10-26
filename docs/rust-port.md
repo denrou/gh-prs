@@ -307,6 +307,9 @@ a terminal and honours `NO_COLOR`, and `--no-color` forces that.
 
 - `#![deny(clippy::wildcard_enum_match_arm)]`. A `_ =>` arm on our own
   enums would quietly cancel the exhaustiveness the type model relies on.
+  It also fires on other crates' enums (`serde_json::Value`, seen in the
+  harness), where it's usually simpler to use the accessor methods
+  (`as_str()`, `is_null()`) than to list every variant.
 - `unwrap_used` and `expect_used` denied outside tests (see Errors).
 - A `ci.yml` workflow on every push to `main`: `cargo fmt --check`,
   `cargo clippy -- -D warnings`, `cargo test`. The repository runs no tests

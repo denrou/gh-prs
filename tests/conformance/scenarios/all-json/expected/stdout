@@ -1,0 +1,61 @@
+[
+  {
+    "repo": "acme/widgets",
+    "number": 10,
+    "title": "Ship the parser",
+    "author": "me",
+    "url": "https://github.com/acme/widgets/pull/10",
+    "isDraft": false,
+    "reviewDecision": "APPROVED",
+    "checksState": "SUCCESS",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "",
+    "myReviewCommit": "",
+    "headRefOid": "head-10",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "author",
+      "involves"
+    ],
+    "attentionReasons": [
+      "ready"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  },
+  {
+    "repo": "acme/widgets",
+    "number": 21,
+    "title": "Speed up the search",
+    "author": "bob",
+    "url": "https://github.com/acme/widgets/pull/21",
+    "isDraft": false,
+    "reviewDecision": "APPROVED",
+    "checksState": "",
+    "mergeable": "MERGEABLE",
+    "myReviewState": "APPROVED",
+    "myReviewCommit": "old-21",
+    "headRefOid": "head-21",
+    "reviewRequestedExplicitly": false,
+    "changesRequestedCommits": [],
+    "hasPendingReviewRequest": false,
+    "unresolvedFeedback": false,
+    "stacked": false,
+    "labels": [],
+    "roles": [
+      "assignee",
+      "involves",
+      "reviewed-by"
+    ],
+    "attentionReasons": [
+      "new-commits"
+    ],
+    "updatedAt": "2099-01-01T00:00:00Z",
+    "createdAt": "2099-01-01T00:00:00Z"
+  }
+]

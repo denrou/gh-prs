@@ -1,0 +1,42 @@
+# Lint and test on every push to main. Agents commit straight to main, so
+# this is the safety net that catches what a local run missed.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+
+  rust:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --bins
+      # Until the Rust CLI lands (step 6 of docs/rust-port.md), the
+      # conformance suite runs against the Python version: that proves the
+      # scenarios, which the Rust version must then reproduce.
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync --locked
+      - run: cargo test --test conformance
+        env:
+          GH_PRS_BIN: .venv/bin/gh-prs

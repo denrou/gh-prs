@@ -1,0 +1,2 @@
+Error: Some PR searches failed; results would be incomplete:
+  Search 'reviewed-by' failed: HTTP 502: Bad Gateway

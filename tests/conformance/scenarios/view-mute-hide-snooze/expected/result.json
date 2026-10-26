@@ -1,0 +1,27 @@
+{
+  "exit_code": 0,
+  "files": {
+    "config.json": {
+      "mute": [
+        {
+          "author": "renovate"
+        }
+      ]
+    },
+    "hidden.json": {
+      "https://github.com/acme/widgets/pull/31": {
+        "since": "2026-01-01T00:00:00+00:00"
+      }
+    },
+    "snooze.json": {
+      "https://github.com/acme/widgets/pull/32": {
+        "oid": "head-32",
+        "reasons": [
+          "review"
+        ],
+        "until": null
+      }
+    }
+  },
+  "writes": []
+}

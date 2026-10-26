@@ -15,7 +15,21 @@ uv run ruff check .         # Lint
 uv run ruff format .        # Format
 uv add <pkg>                # Add dependency
 uv add --dev <pkg>          # Add dev dependency
+
+# Rust port in progress (docs/rust-port.md)
+cargo fmt                   # Format
+cargo clippy --all-targets -- -D warnings  # Lint
+cargo test --bins           # Unit tests
+cargo test --test conformance              # Conformance suite vs the Rust binary (red until step 6)
+GH_PRS_BIN=.venv/bin/gh-prs cargo test --test conformance  # Same suite vs Python
+BLESS=1 GH_PRS_BIN=.venv/bin/gh-prs cargo test --test conformance  # Rewrite expected/ from Python, then review the diff
 ```
+
+Conformance scenarios live in `tests/conformance/scenarios/`, one directory
+each; the scenario format is documented at the top of
+`tests/conformance/main.rs` and `fake_gh.rs`. A new scenario is blessed
+against Python and its `expected/` reviewed by hand before it is committed:
+it is the spec the Rust version must reproduce.
 
 ## Workflow
 

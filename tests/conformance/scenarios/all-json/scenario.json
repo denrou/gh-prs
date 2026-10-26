@@ -1,0 +1,66 @@
+{
+  "args": [
+    "-a",
+    "--json"
+  ],
+  "gh": {
+    "viewer": "me",
+    "searches": {
+      "author": [
+        "A_READY"
+      ],
+      "involves": [
+        "A_READY",
+        "R_NEWCOMMITS"
+      ],
+      "reviewed-by": [
+        "R_NEWCOMMITS"
+      ],
+      "assignee": [
+        "R_NEWCOMMITS"
+      ]
+    },
+    "nodes": {
+      "A_READY": {
+        "number": 10,
+        "title": "Ship the parser",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "APPROVED",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "SUCCESS"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "R_NEWCOMMITS": {
+        "number": 21,
+        "title": "Speed up the search",
+        "author": {
+          "login": "bob"
+        },
+        "reviewDecision": "APPROVED",
+        "latestReviews": {
+          "nodes": [
+            {
+              "author": {
+                "login": "me"
+              },
+              "state": "APPROVED",
+              "commit": {
+                "oid": "old-21"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

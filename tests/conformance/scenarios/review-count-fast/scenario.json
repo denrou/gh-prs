@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-r",
+    "--count"
+  ],
+  "gh": {
+    "viewer": "me",
+    "issueCounts": {
+      "review-requested": 150
+    }
+  }
+}

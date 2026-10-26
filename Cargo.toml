@@ -1,0 +1,30 @@
+[package]
+name = "gh-prs"
+# Kept equal to pyproject.toml until the switch (docs/rust-port.md).
+version = "0.18.1"
+edition = "2024"
+rust-version = "1.85"
+description = "CLI for listing GitHub pull requests that need your attention, powered by gh CLI"
+license = "MIT"
+repository = "https://github.com/denrou/gh-prs"
+publish = false
+
+[[test]]
+name = "conformance"
+path = "tests/conformance/main.rs"
+harness = false
+
+[dependencies]
+
+[dev-dependencies]
+libtest-mimic = "0.8.2"
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+
+[lints.clippy]
+# A `_ =>` arm on our own enums would quietly cancel the exhaustiveness the
+# fail-safe rules rely on (docs/rust-port.md, Type model).
+wildcard_enum_match_arm = "deny"
+# Bad input must surface as an error message, never a panic.
+unwrap_used = "deny"
+expect_used = "deny"

@@ -1,0 +1,173 @@
+{
+  "args": [
+    "--no-color"
+  ],
+  "gh": {
+    "viewer": "me",
+    "searches": {
+      "author": [
+        "A_READY",
+        "A_CI",
+        "A_CONFLICT",
+        "A_STALE",
+        "A_UNRESOLVED",
+        "A_STACKED",
+        "A_DRAFT"
+      ],
+      "review-requested": [
+        "R_REVIEW"
+      ],
+      "reviewed-by": [
+        "R_NEWCOMMITS"
+      ]
+    },
+    "nodes": {
+      "A_READY": {
+        "number": 10,
+        "title": "Ship the parser",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "APPROVED",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "SUCCESS"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "A_CI": {
+        "number": 11,
+        "title": "Bump the linter",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "state": "FAILURE"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "A_CONFLICT": {
+        "number": 12,
+        "title": "Rework the cache",
+        "author": {
+          "login": "me"
+        },
+        "mergeable": "CONFLICTING"
+      },
+      "A_STALE": {
+        "number": 13,
+        "title": "Document the flags",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "updatedAt": "2001-01-01T00:00:00Z"
+      },
+      "A_UNRESOLVED": {
+        "number": 14,
+        "title": "Rename the module",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviewThreads": {
+          "nodes": [
+            {
+              "isResolved": false,
+              "comments": {
+                "nodes": [
+                  {
+                    "author": {
+                      "login": "alice"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "A_STACKED": {
+        "number": 15,
+        "title": "Stacked on the parser",
+        "author": {
+          "login": "me"
+        },
+        "reviewDecision": "APPROVED",
+        "baseRef": {
+          "associatedPullRequests": {
+            "totalCount": 1
+          }
+        }
+      },
+      "A_DRAFT": {
+        "number": 16,
+        "title": "Explore a new layout",
+        "author": {
+          "login": "me"
+        },
+        "isDraft": true,
+        "updatedAt": "2001-01-01T00:00:00Z"
+      },
+      "R_REVIEW": {
+        "number": 20,
+        "title": "Fix [link=https://evil.example]the[/link] parser",
+        "author": {
+          "login": "alice"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "me"
+              }
+            }
+          ]
+        }
+      },
+      "R_NEWCOMMITS": {
+        "number": 21,
+        "title": "Speed up the search",
+        "author": {
+          "login": "bob"
+        },
+        "reviewDecision": "APPROVED",
+        "latestReviews": {
+          "nodes": [
+            {
+              "author": {
+                "login": "me"
+              },
+              "state": "APPROVED",
+              "commit": {
+                "oid": "old-21"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "responses": {
+      "search:reviewed-by": {
+        "exit": 1,
+        "stderr": "HTTP 502: Bad Gateway\n"
+      }
+    }
+  }
+}

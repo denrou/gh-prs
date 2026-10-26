@@ -1,0 +1,24 @@
+Needs your review (1)
+widgets  #20  Fix [link=https://evil.example]the[/link] parser  alice  2099-01-01
+
+New commits since your review (1)
+widgets  #21  Speed up the search  bob  2099-01-01
+
+Ready to ship (1)
+widgets  #10  Ship the parser  2099-01-01
+
+CI failed (1)
+widgets  #11  Bump the linter  2099-01-01
+
+Conflicts to resolve (1)
+widgets  #12  Rework the cache  2099-01-01
+
+Unresolved comments — reply or resolve (1)
+widgets  #14  Rename the module  2099-01-01
+
+Waiting on review — time to nudge (1)
+widgets  #13  Document the flags  2001-01-01
+
+Drafts gone quiet — finish or mark ready (1)
+widgets  #16  (draft) Explore a new layout  2001-01-01
+

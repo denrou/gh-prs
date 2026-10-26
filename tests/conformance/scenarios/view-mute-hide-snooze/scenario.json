@@ -1,0 +1,120 @@
+{
+  "args": [
+    "--no-color"
+  ],
+  "files": {
+    "config.json": {
+      "mute": [
+        {
+          "author": "renovate"
+        }
+      ]
+    },
+    "hidden.json": {
+      "https://github.com/acme/widgets/pull/31": {
+        "since": "2026-01-01T00:00:00+00:00"
+      }
+    },
+    "snooze.json": {
+      "https://github.com/acme/widgets/pull/32": {
+        "oid": "head-32",
+        "reasons": [
+          "review"
+        ],
+        "until": null
+      },
+      "https://github.com/acme/widgets/pull/33": {
+        "oid": "old-33",
+        "reasons": [
+          "review"
+        ],
+        "until": null
+      },
+      "https://github.com/acme/widgets/pull/99": {
+        "oid": "head-99",
+        "until": "2001-01-01T00:00:00+00:00"
+      }
+    }
+  },
+  "gh": {
+    "viewer": "me",
+    "searches": {
+      "review-requested": [
+        "M_BOT",
+        "H_HIDDEN",
+        "S_LIVE",
+        "S_DEAD"
+      ]
+    },
+    "nodes": {
+      "M_BOT": {
+        "number": 30,
+        "author": {
+          "login": "renovate"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "me"
+              }
+            }
+          ]
+        }
+      },
+      "H_HIDDEN": {
+        "number": 31,
+        "author": {
+          "login": "carol"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "me"
+              }
+            }
+          ]
+        }
+      },
+      "S_LIVE": {
+        "number": 32,
+        "author": {
+          "login": "dave"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "me"
+              }
+            }
+          ]
+        }
+      },
+      "S_DEAD": {
+        "number": 33,
+        "author": {
+          "login": "erin"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "me"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+1 PR(s) muted by config — 'gh prs -r' still lists them
+1 hidden PR(s) withheld — 'gh prs hide' to list
+Warning: snooze expired for https://github.com/acme/widgets/pull/33 (head moved since you snoozed it)
+1 snoozed PR(s) hidden — 'gh prs snooze' to list
