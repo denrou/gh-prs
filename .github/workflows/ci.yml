@@ -32,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --bins
+      - run: cargo test --lib
       # Until the Rust CLI lands (step 6 of docs/rust-port.md), the
       # conformance suite runs against the Python version: that proves the
       # scenarios, which the Rust version must then reproduce.

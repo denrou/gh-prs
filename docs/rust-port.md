@@ -78,12 +78,16 @@ Deliberately left out:
 
 ## Layout
 
-A single binary crate. `Cargo.toml` sits at the root next to `pyproject.toml`
-until the switch, and the two toolchains don't see each other's files.
+A library plus a thin binary in one crate. The split exists because the port
+lands module by module: in a binary-only crate, a module that `main` doesn't
+reach yet fails `clippy -D warnings` as dead code, while a library's public
+items don't. `Cargo.toml` sits at the root next to `pyproject.toml` until the
+switch, and the two toolchains don't see each other's files.
 
 ```
 src/
   main.rs        argv → cli::run → exit code
+  lib.rs         the module list
   pr.rs          PullRequest and the enums of the type model
   attention.rs   attention reasons, stale and stale-draft (pure)  ← from gh.py
   duration.rs    Duration, parse_duration, add_days               ← duration.py + parse_duration
@@ -431,4 +435,5 @@ After upgrading, `brew autoremove` drops the now-orphaned `python@3.14`.
 | Ctrl-C                                   | prints "Interrupted.", exits `130`                | default SIGINT: the shell reports `130`, no message | No signal-handling crate. Stores are safe either way (write-then-rename)         |
 | `--json` text                            | non-ASCII as `\u` escapes; coloured on a terminal | UTF-8 as is; never coloured                         | Parsed JSON is identical; colouring a scripting interface was a rich side effect |
 | `--snooze`/`--unsnooze`/`--snoozed`      | migration hint, exit `2`                          | clap's unexpected-argument error, exit `2`          | The subcommands replaced them long enough ago                                    |
+| Non-ASCII digits in a duration (`٣d`)    | accepted (Python's `\d` and `int()`)              | rejected                                            | Nobody types them; ASCII-only parsing is simpler to reason about                 |
 | Table spacing and `--help` layout        | rich and argparse                                 | hand-drawn and clap                                 | Not part of the contract                                                         |
