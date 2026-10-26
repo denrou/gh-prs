@@ -88,23 +88,29 @@ mute}` JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from
 - **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
   Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
 
-### Loading (single GraphQL round-trip per qualifier)
+### Loading (id searches, then batched hydration)
 
-`fetch_prs(qualifiers)` runs one `gh api graphql` search per qualifier
-(`author`, `review-requested`, `reviewed-by`, `assignee`, `involves`) in
-parallel threads.
-Each search fetches everything in one shot — review decision, mergeability,
-CI rollup state, `latestReviews`, `latestOpinionatedReviews`, `reviewRequests`,
-`reviewThreads` (resolution state plus each thread's last commenter), plus the
-viewer's login — so there is no per-PR enrichment phase. `reviewThreads` is the
-one exception to "every search fetches everything": an `@include($withThreads)`
-directive limits it to the `author` search, because hydrating each thread's
-last comment is the one measurably expensive fragment field (~+1s on
-`involves`, ~+3% on `author`; `isResolved` alone costs nothing) and only
-author-search nodes ever feed the authored-only **unresolved** reason —
-`author` leads every multi-qualifier view (pinned by tests), so first-seen-wins
-de-duplication always sources an authored PR's fields from that search. `attention_reasons` is computed by the
-pure `_attention_reasons()` helper (unit-tested in `tests/test_gh.py`).
+`fetch_prs(qualifiers)` runs in two parallel phases. First, one
+`gh api graphql` search per qualifier (`author`, `review-requested`,
+`reviewed-by`, `assignee`, `involves`) returns node ids only, plus the
+viewer's login and `issueCount`. Then the union of ids — each PR once,
+however many searches matched it — is hydrated by `_hydrate()`
+(`nodes(ids:)`) in batches of `_HYDRATE_BATCH` (15): review decision,
+mergeability, CI rollup state, `latestReviews`, `latestOpinionatedReviews`,
+`reviewRequests`, `reviewThreads` (resolution state plus each thread's last
+commenter). The split exists because GitHub answers HTTP 502 to any request
+running past ~10s, and a single hydrated 50-PR search reached it (seen on
+`involves` and `reviewed-by`); batches of 15 take 2–5s. Both phases go
+through `_gather()`, capped at `_MAX_PARALLEL` concurrent requests, where
+one failure fails the whole fetch. `reviewThreads` is gated by an
+`@include($withThreads)` directive and fetched only for PRs the `author`
+search matched, because hydrating each thread's last comment is the one
+measurably expensive fragment field (~+1s on `involves`, ~+3% on `author`;
+`isResolved` alone costs nothing) and only the authored-only **unresolved**
+reason reads it. A PR deleted (null node) or positively closed/merged
+between the two phases is dropped: the searches only match open PRs.
+`attention_reasons` is computed by the pure `_attention_reasons()` helper
+(unit-tested in `tests/test_gh.py`).
 
 Performance notes (measured once; exact figures drift, the ratios hold):
 
@@ -115,8 +121,12 @@ Performance notes (measured once; exact figures drift, the ratios hold):
   `involves:@me`, the slowest search by far.
 - Node _hydration_ dominates search cost, not the search itself — a
   count-only `issueCount` query is roughly an order of magnitude faster than
-  a hydrated one. `count_prs()` exploits this for single-qualifier `--count`
-  (`-c`/`-r`), the status-bar polling path.
+  a hydrated one (0.6s versus 7–10s for 50 PRs; ~2.5s fixed plus ~0.1s per
+  PR). `count_prs()` exploits this for single-qualifier `--count`
+  (`-c`/`-r`), the status-bar polling path, and the id-only searches for
+  everything else. About a third of the search hits overlap across
+  qualifiers, which the one-lookup-per-PR union saves; `-a` went from 8–12s
+  to ~5s.
 - Each search is capped at `_SEARCH_LIMIT` (100) nodes; searches are
   `sort:updated-desc`, so truncation keeps the most recently updated PRs, and
   when `issueCount` exceeds the cap `fetch_prs()` reports the truncation
@@ -127,9 +137,9 @@ Performance notes (measured once; exact figures drift, the ratios hold):
 
 "Error" must never look like "nothing to do" (critical for `--count` in status
 bars). All `gh` failures raise `GhError` — including per-qualifier search
-failures (partial results would silently hide PRs), subprocess timeouts
-(60 s), and any deviation from the expected GraphQL response envelope
-(validated in `_graphql()`/`_search()`). The same fail-safe direction applies
+and per-batch lookup failures (partial results would silently hide PRs),
+subprocess timeouts (60 s), and any deviation from the expected GraphQL
+response envelope (validated in `_graphql()`/`_search()`/`_hydrate()`). The same fail-safe direction applies
 to per-PR fields: unknown CI states map to `PENDING`, and "ready" requires a
 positive `MERGEABLE` (GitHub reports `UNKNOWN` while recomputing
 mergeability). The CLI prints errors to stderr and exits non-zero (130 on

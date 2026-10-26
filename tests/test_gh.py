@@ -1223,36 +1223,26 @@ class TestSearch:
     """_search / _graphql response-envelope validation (mocked _run_gh)."""
 
     def test_happy_path(self, monkeypatch):
-        monkeypatch.setattr(
-            gh, "_run_gh", lambda *a: _completed(_search_payload([_node()]))
-        )
-        viewer, nodes, count = gh._search("author")
+        payload = _search_payload([{"id": "PR_1"}, None, {"id": "PR_2"}])
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        viewer, ids, count = gh._search("author")
         assert viewer == "me"
-        assert len(nodes) == 1
-        assert count == 1
+        # A null result node is skipped, as GitHub returns for an
+        # inaccessible match.
+        assert ids == ["PR_1", "PR_2"]
+        assert count == 3
 
-    def test_only_the_author_search_fetches_review_threads(self, monkeypatch):
-        # Hydrating each thread's last comment is the one measurably expensive
-        # fragment field, and only author-search nodes feed 'unresolved'.
-        calls: list[tuple] = []
-        monkeypatch.setattr(
-            gh,
-            "_run_gh",
-            lambda *a: (calls.append(a), _completed(_search_payload([])))[1],
-        )
-        for qualifier in gh.ALL_QUALIFIERS:
-            gh._search(qualifier)
-        by_qualifier = dict(zip(gh.ALL_QUALIFIERS, calls, strict=True))
-        for qualifier, args in by_qualifier.items():
-            expected = "true" if qualifier == "author" else "false"
-            assert f"withThreads={expected}" in args, qualifier
+    def test_search_does_not_hydrate_nodes(self):
+        # Hydration is what pushed a 50-PR search past GitHub's ~10s limit
+        # (HTTP 502); it belongs to the batched _hydrate lookups.
+        assert "prFields" not in gh._SEARCH_QUERY
+        assert "...prFields" in gh._HYDRATE_QUERY
 
-    def test_author_leads_the_qualifier_order(self):
-        # fetch_prs' first-seen-wins dedup must source an authored PR's
-        # fields from the author search — the only one carrying the
-        # reviewThreads block. (The attention view's own qualifier list is
-        # pinned in test_cli.)
-        assert gh.ALL_QUALIFIERS[0] == "author"
+    def test_node_without_id_raises(self, monkeypatch):
+        payload = _search_payload([{"number": 42}])
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="without a node id"):
+            gh._search("author")
 
     def test_nonzero_exit_raises_with_context(self, monkeypatch):
         monkeypatch.setattr(
@@ -1416,16 +1406,62 @@ class TestResolvePr:
             gh.resolve_pr("42")
 
 
-class TestFetchPrs:
-    """fetch_prs orchestration (mocked _search)."""
+class TestHydrate:
+    """_hydrate response validation (mocked _run_gh)."""
 
-    @staticmethod
-    def _fake_search(responses: dict):
+    def test_passes_ids_and_threads_flag(self, monkeypatch):
+        calls: list[tuple] = []
+        payload = json.dumps({"data": {"nodes": [_node(id="PR_1")]}})
+        monkeypatch.setattr(
+            gh, "_run_gh", lambda *a: (calls.append(a), _completed(payload))[1]
+        )
+        assert gh._hydrate("PR lookup 1/1", ["PR_1", "PR_2"], True)[0]["id"] == "PR_1"
+        gh._hydrate("PR lookup 1/1", ["PR_1"], False)
+        assert "withThreads=true" in calls[0]
+        assert "withThreads=false" in calls[1]
+        assert [a for a in calls[0] if a.startswith("ids[]=")] == [
+            "ids[]=PR_1",
+            "ids[]=PR_2",
+        ]
+
+    def test_missing_nodes_block_raises(self, monkeypatch):
+        payload = json.dumps({"data": {}})
+        monkeypatch.setattr(gh, "_run_gh", lambda *a: _completed(payload))
+        with pytest.raises(GhError, match="PR lookup 1/1.*no nodes block"):
+            gh._hydrate("PR lookup 1/1", ["PR_1"], False)
+
+
+class TestFetchPrs:
+    """fetch_prs orchestration (mocked _search and _hydrate)."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_hydrate(self, monkeypatch):
+        # Full nodes registered by the fake searches, keyed by node id; the
+        # fake lookup returns them the way GitHub's nodes(ids:) would.
+        self.registry: dict[str, dict | None] = {}
+        self.lookups: list[tuple[list[str], bool]] = []
+
+        def fake(context: str, ids: list[str], with_threads: bool):
+            self.lookups.append((list(ids), with_threads))
+            return [self.registry[i] for i in ids]
+
+        monkeypatch.setattr(gh, "_hydrate", fake)
+
+    def _fake_search(self, responses: dict):
         def fake(qualifier: str):
             result = responses[qualifier]
             if isinstance(result, Exception):
                 raise result
-            return result
+            viewer, nodes, count = result
+            ids = []
+            for node in nodes:
+                # The same dict in two searches is the same PR.
+                node_id = node.setdefault("id", f"PR_{id(node)}")
+                # A test may pre-register what the lookup returns (None:
+                # the PR vanished after the search).
+                self.registry.setdefault(node_id, node)
+                ids.append(node_id)
+            return viewer, ids, count
 
         return fake
 
@@ -1438,9 +1474,8 @@ class TestFetchPrs:
             self._fake_search(
                 {
                     "author": ("me", [shared, authored], 2),
-                    # The same PR also comes back from the second search,
-                    # plus a null node that must be skipped.
-                    "review-requested": ("me", [None, shared], 1),
+                    # The same PR also comes back from the second search.
+                    "review-requested": ("me", [shared], 1),
                 }
             ),
         )
@@ -1455,6 +1490,76 @@ class TestFetchPrs:
         assert by_number[1].attention_reasons == {"review"}
         # Sorted newest-updated first: PR 2 (07-16) before PR 1 (07-15).
         assert [pr.number for pr in prs] == [2, 1]
+        # Hydrated once, though two searches matched PR 1.
+        assert sorted(i for ids, _ in self.lookups for i in ids) == sorted(
+            [shared["id"], authored["id"]]
+        )
+
+    def test_only_authored_prs_are_hydrated_with_threads(self, monkeypatch):
+        # Thread hydration is the one measurably expensive fragment field,
+        # and only the authored-only 'unresolved' reason reads it.
+        mine = _node(number=1)
+        both = _node(number=2)
+        theirs = _node(number=3)
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search(
+                {
+                    "author": ("me", [mine, both], 2),
+                    "review-requested": ("me", [both, theirs], 2),
+                }
+            ),
+        )
+        fetch_prs(["author", "review-requested"])
+        assert sorted(self.lookups) == sorted(
+            [([mine["id"], both["id"]], True), ([theirs["id"]], False)]
+        )
+
+    def test_lookups_are_batched(self, monkeypatch):
+        nodes = [_node(number=n) for n in range(gh._HYDRATE_BATCH + 1)]
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search({"review-requested": ("me", nodes, len(nodes))}),
+        )
+        prs = fetch_prs(["review-requested"])
+        assert len(prs) == len(nodes)
+        assert sorted(len(ids) for ids, _ in self.lookups) == [
+            1,
+            gh._HYDRATE_BATCH,
+        ]
+
+    def test_no_match_makes_no_lookup(self, monkeypatch):
+        monkeypatch.setattr(gh, "_search", self._fake_search({"author": ("me", [], 0)}))
+        assert fetch_prs(["author"]) == []
+        assert self.lookups == []
+
+    def test_pr_gone_or_closed_since_the_search_is_dropped(self, monkeypatch):
+        # Searches only match open PRs; a PR deleted (null node) or closed in
+        # the gap before its lookup must not resurface. An unknown state stays.
+        kept = _node(number=1)
+        gone = _node(number=2)
+        merged = _node(number=3, state="MERGED")
+        monkeypatch.setattr(
+            gh,
+            "_search",
+            self._fake_search({"author": ("me", [kept, gone, merged], 3)}),
+        )
+        self.registry[gone.setdefault("id", "PR_gone")] = None
+        prs = fetch_prs(["author"])
+        assert [pr.number for pr in prs] == [1]
+
+    def test_failed_lookup_fails_the_whole_fetch(self, monkeypatch):
+        def failing(context, ids, with_threads):
+            raise GhError(f"{context} failed: gh: HTTP 502")
+
+        monkeypatch.setattr(gh, "_hydrate", failing)
+        monkeypatch.setattr(
+            gh, "_search", self._fake_search({"author": ("me", [_node()], 1)})
+        )
+        with pytest.raises(GhError, match="(?s)incomplete.*PR lookup 1/1.*502"):
+            fetch_prs(["author"])
 
     def test_skip_weekends_reaches_the_staleness_clock(self, monkeypatch):
         # The flag is only useful if it survives the trip from the caller to

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from typing import Any
 from urllib.parse import urlparse
 
@@ -107,25 +108,40 @@ fragment prFields on PullRequest {
 }
 """
 
-# Static query parametrized with GraphQL variables (bound via gh's -f/-F
+# Static queries parametrized with GraphQL variables (bound via gh's -f/-F
 # flags), so no untrusted or dynamic text is ever spliced into the query.
-# $withThreads gates the reviewThreads block: hydrating each thread's last
-# comment is the one measurably expensive fragment field (~+1s on the
-# involves search, ~+3% on author; isResolved alone costs nothing), and only
-# the author search's nodes ever feed the authored-only 'unresolved' reason,
-# so only that search pays for it.
-_SEARCH_QUERY = (
-    """
-query($q: String!, $limit: Int!, $withThreads: Boolean!) {
+# A search returns node ids only: hydrating the nodes is what costs (~0.1s per
+# PR), and GitHub answers HTTP 502 to any request running past ~10s, which a
+# 50-PR search reached. The ids are hydrated by _HYDRATE_QUERY in batches.
+_SEARCH_QUERY = """
+query($q: String!, $limit: Int!) {
   viewer { login }
   results: search(query: $q, type: ISSUE, first: $limit) {
     issueCount
-    nodes { ...prFields }
+    nodes { ... on PullRequest { id } }
   }
+}
+"""
+
+# $withThreads gates the reviewThreads block: hydrating each thread's last
+# comment is the one measurably expensive fragment field (~+1s on the
+# involves search, ~+3% on author; isResolved alone costs nothing), and only
+# the authored-only 'unresolved' reason reads it, so only authored PRs pay.
+_HYDRATE_QUERY = (
+    """
+query($ids: [ID!]!, $withThreads: Boolean!) {
+  nodes(ids: $ids) { ... on PullRequest { id ...prFields } }
 }
 """
     + _PR_FRAGMENT
 )
+
+# PRs hydrated per request: measured at 2-5s for 15 PRs, half the 10s budget
+# with room for the slowdown GitHub applies to concurrent requests.
+_HYDRATE_BATCH = 15
+# Concurrent gh requests per phase; GitHub throttles concurrent requests per
+# token, so a large union of PRs must not fan out unbounded.
+_MAX_PARALLEL = 8
 
 # One PR looked up by URL (the `merge` preflight). `resource` resolves any
 # GitHub URL, so the typename is fetched to tell a PR from an issue; the
@@ -609,35 +625,80 @@ def merge_pr(
     _run_gh_action(f"Merging {url}", *args, url)
 
 
-def _search(qualifier: str) -> tuple[str, list[dict[str, Any]], int]:
-    """Run one qualifier's search; return (viewer_login, PR nodes, issue_count).
+def _search(qualifier: str) -> tuple[str, list[str], int]:
+    """Run one qualifier's search; return (viewer_login, PR node ids, issue_count).
 
     ``issue_count`` is the exact server-side match count, which can exceed the
-    ``_SEARCH_LIMIT`` cap on returned nodes. Only the author search fetches
-    ``reviewThreads`` (see _SEARCH_QUERY); other searches' nodes come back
-    without the block, which from_graphql reads as "no thread data".
+    ``_SEARCH_LIMIT`` cap on returned nodes.
     """
+    context = f"Search '{qualifier}'"
     data = _graphql(
-        f"Search '{qualifier}'",
+        context,
         "-f",
         f"query={_SEARCH_QUERY}",
         "-f",
         f"q={_search_string(qualifier)}",
         "-F",
         f"limit={_SEARCH_LIMIT}",
-        "-F",
-        # gh's -F coerces the strings true/false to GraphQL booleans.
-        f"withThreads={'true' if qualifier == 'author' else 'false'}",
     )
     results = data.get("results")
     if not isinstance(results, dict):
-        raise GhError(
-            f"Search '{qualifier}': response has no results block (unexpected shape)"
-        )
+        raise GhError(f"{context}: response has no results block (unexpected shape)")
     viewer = (data.get("viewer") or {}).get("login", "")
-    nodes = results.get("nodes") or []
+    ids = []
+    for node in results.get("nodes") or []:
+        if not node:
+            continue
+        node_id = node.get("id") if isinstance(node, dict) else None
+        if not isinstance(node_id, str) or not node_id:
+            raise GhError(f"{context}: result without a node id (unexpected shape)")
+        ids.append(node_id)
     issue_count = results.get("issueCount") or 0
-    return viewer, nodes, issue_count
+    return viewer, ids, issue_count
+
+
+def _hydrate(context: str, ids: list[str], with_threads: bool) -> list[Any]:
+    """Look up PR nodes by id; null entries are PRs that vanished meanwhile."""
+    args = [
+        "-f",
+        f"query={_HYDRATE_QUERY}",
+        "-F",
+        # gh's -F coerces the strings true/false to GraphQL booleans.
+        f"withThreads={'true' if with_threads else 'false'}",
+    ]
+    for node_id in ids:
+        args += ["-f", f"ids[]={node_id}"]
+    data = _graphql(context, *args)
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list):
+        raise GhError(f"{context}: response has no nodes block (unexpected shape)")
+    return nodes
+
+
+def _gather[T](tasks: dict[str, Callable[[], T]], what: str) -> dict[str, T]:
+    """Run labelled gh calls in parallel; any failure fails them all.
+
+    A partial result would silently hide PRs, and "error" must never look
+    like "nothing to do".
+    """
+    results: dict[str, T] = {}
+    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=max(min(len(tasks), _MAX_PARALLEL), 1)) as pool:
+        futures = {pool.submit(fn): label for label, fn in tasks.items()}
+        for future in as_completed(futures):
+            label = futures[future]
+            try:
+                results[label] = future.result()
+            except GhError as exc:
+                errors.append(str(exc))
+            except Exception as exc:  # keep the aggregation exhaustive
+                errors.append(f"{label} crashed: {exc!r}")
+    if errors:
+        raise GhError(
+            f"Some {what} failed; results would be incomplete:\n  "
+            + "\n  ".join(sorted(errors))
+        )
+    return results
 
 
 def fetch_prs(
@@ -653,10 +714,12 @@ def fetch_prs(
     defaults to all five) in parallel; GitHub executes aliased searches
     sequentially, so separate
     requests cost the slowest search instead of the sum. Each search is
-    capped at 100 PRs and fetches everything in one shot: review decision,
-    mergeability, CI rollup, latest reviews, and review requests. Archived
-    repos are excluded by the search filter. Each PR's ``attention_reasons``
-    is computed before returning.
+    capped at 100 PRs and returns node ids only; the union of ids is then
+    hydrated in parallel batches of ``_HYDRATE_BATCH`` (review decision,
+    mergeability, CI rollup, latest reviews, review requests), keeping every
+    request well under GitHub's ~10s limit. Archived repos are excluded by
+    the search filter. Each PR's ``attention_reasons`` is computed before
+    returning.
 
     ``stale_after`` is the silence threshold for the 'stale' nudge on
     authored PRs still awaiting review and the 'stale-draft' nudge on
@@ -671,29 +734,16 @@ def fetch_prs(
     hidden thread could carry unanswered feedback) — in every case, degraded
     coverage is informed rather than silent.
 
-    Raises ``GhError`` if any search fails or returns unparseable data: a
+    Raises ``GhError`` if any search or lookup fails or returns unparseable data: a
     partial result would silently hide PRs, and "error" must never look like
     "nothing to do".
     """
     if qualifiers is None:
         qualifiers = list(ALL_QUALIFIERS)
-    results: dict[str, tuple[str, list[dict[str, Any]], int]] = {}
-    errors: list[str] = []
-    with ThreadPoolExecutor(max_workers=max(len(qualifiers), 1)) as pool:
-        futures = {pool.submit(_search, q): q for q in qualifiers}
-        for future in as_completed(futures):
-            qualifier = futures[future]
-            try:
-                results[qualifier] = future.result()
-            except GhError as exc:
-                errors.append(str(exc))
-            except Exception as exc:  # keep the aggregation exhaustive
-                errors.append(f"Search '{qualifier}' crashed: {exc!r}")
-    if errors:
-        raise GhError(
-            "Some PR searches failed; results would be incomplete:\n  "
-            + "\n  ".join(errors)
-        )
+    searches = _gather(
+        {f"Search '{q}'": partial(_search, q) for q in qualifiers}, "PR searches"
+    )
+    results = {q: searches[f"Search '{q}'"] for q in qualifiers}
 
     # viewer.login is non-null in GitHub's schema; its absence means the
     # response can't be trusted, and an empty login would silently disable
@@ -711,30 +761,42 @@ def fetch_prs(
                     f"showing the newest {_SEARCH_LIMIT}"
                 )
 
-    seen: dict[str, PullRequest] = {}
-    # Iterate in qualifier order (not completion order) so the same search's
-    # node deterministically provides each PR's field values (first-seen wins;
-    # two searches can return slightly different snapshots of the same PR).
-    # 'author' leads every multi-qualifier view (pinned by tests), so an
-    # authored PR's fields always come from the author search — the only one
-    # that fetches reviewThreads, which the 'unresolved' reason depends on.
+    # Each PR is hydrated once however many searches matched it (a third of
+    # the hits overlap in practice), so every field comes from one snapshot.
+    roles: dict[str, set[str]] = {}
     for qualifier in qualifiers:
-        _, nodes, _ = results[qualifier]
-        for node in nodes:
+        for node_id in results[qualifier][1]:
+            roles.setdefault(node_id, set()).add(qualifier)
+    authored = [i for i, r in roles.items() if "author" in r]
+    others = [i for i, r in roles.items() if "author" not in r]
+    batches = [
+        (ids[start : start + _HYDRATE_BATCH], with_threads)
+        for ids, with_threads in ((authored, True), (others, False))
+        for start in range(0, len(ids), _HYDRATE_BATCH)
+    ]
+    lookups = {}
+    for n, (ids, with_threads) in enumerate(batches, start=1):
+        label = f"PR lookup {n}/{len(batches)}"
+        lookups[label] = partial(_hydrate, label, ids, with_threads)
+    hydrated = _gather(lookups, "PR lookups")
+
+    seen: dict[str, PullRequest] = {}
+    for label in lookups:
+        for node in hydrated[label]:
             if not node:
                 continue
             try:
                 pr = PullRequest.from_graphql(node, viewer)
+                pr.roles.update(roles[node["id"]])
             # AttributeError covers a block arriving as a non-dict (`.get` on a
             # list): the module's contract is that any deviation from the
             # expected envelope surfaces as GhError, never a raw traceback.
             except (KeyError, TypeError, AttributeError) as e:
                 raise GhError(f"Failed to parse PR data: {e!r}") from e
-            if pr.id in seen:
-                seen[pr.id].roles.add(qualifier)
-            else:
-                pr.roles.add(qualifier)
-                seen[pr.id] = pr
+            # Closed or merged between the search and the lookup.
+            if pr.state in ("CLOSED", "MERGED"):
+                continue
+            seen[pr.id] = pr
 
     now = datetime.now(UTC)
     for pr in seen.values():
