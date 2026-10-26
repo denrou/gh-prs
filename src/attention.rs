@@ -124,16 +124,18 @@ pub fn attention_reasons(pr: &PullRequest, staleness: Option<&Staleness>) -> BTr
     // oid on one side still counts as moved; with none at all there is
     // nothing to compare.
     let submitted = match my_state {
-        Some(Reported::Known(
-            ReviewState::Approved
-            | ReviewState::ChangesRequested
-            | ReviewState::Commented
-            | ReviewState::Dismissed,
-        )) => true,
+        // A state GitHub added since counts as submitted: unknown must never
+        // read as "nothing to do".
         Some(
-            Reported::Known(ReviewState::Pending) | Reported::Unrecognised(_) | Reported::Missing,
-        )
-        | None => false,
+            Reported::Known(
+                ReviewState::Approved
+                | ReviewState::ChangesRequested
+                | ReviewState::Commented
+                | ReviewState::Dismissed,
+            )
+            | Reported::Unrecognised(_),
+        ) => true,
+        Some(Reported::Known(ReviewState::Pending) | Reported::Missing) | None => false,
     };
     let reviewed_commit = pr
         .my_review
@@ -267,7 +269,7 @@ fn weekend_before(local: DateTime) -> SignedDuration {
 mod tests {
     use super::*;
     use crate::pr::testing::{my_review, oid, pr, reasons, roles};
-    use crate::pr::{ChangesRequested, Oid};
+    use crate::pr::{ChangesRequested, MyReview, Oid};
 
     use Reason::{CiFailed, Conflict, NewCommits, Ready, Review, Stale, StaleDraft, Unresolved};
     use Role::{Author, ReviewRequested, ReviewedBy};
@@ -564,6 +566,29 @@ mod tests {
                 ..reviewed()
             };
             assert_eq!(bare(&pr), reasons(&[NewCommits]));
+        }
+
+        #[test]
+        fn unrecognised_review_state_flags() {
+            // Deliberately unlike the Python version, which stayed quiet.
+            let pr = PullRequest {
+                my_review: Some(MyReview {
+                    state: Reported::Unrecognised("SUPERSEDED".to_owned()),
+                    commit: oid("aaa111"),
+                }),
+                ..reviewed()
+            };
+            assert_eq!(bare(&pr), reasons(&[NewCommits]));
+        }
+
+        #[test]
+        fn pending_review_does_not_flag() {
+            // A review I haven't submitted yet is not a review of the old head.
+            let pr = PullRequest {
+                my_review: my_review(ReviewState::Pending, "aaa111"),
+                ..reviewed()
+            };
+            assert_eq!(bare(&pr), reasons(&[]));
         }
     }
 
