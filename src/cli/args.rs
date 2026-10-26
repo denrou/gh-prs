@@ -8,6 +8,8 @@ const REF_HELP: &str =
 #[derive(Debug, Parser)]
 #[command(
     name = "gh prs",
+    // Usage lines name the gh alias, whatever the executable is called.
+    bin_name = "gh prs",
     version,
     about = "List GitHub pull requests that need your attention.",
     // argparse accepted unambiguous prefixes of long options; keep that.
