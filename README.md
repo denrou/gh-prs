@@ -68,6 +68,8 @@ By default it shows only the PRs that need your attention:
 With [Homebrew](https://brew.sh/):
 
 ```bash
+brew tap denrou/tap
+brew trust denrou/tap
 brew install denrou/tap/gh-prs
 ```
 
