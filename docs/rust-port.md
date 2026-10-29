@@ -421,7 +421,7 @@ binaries on the GitHub release. Targets: `aarch64-apple-darwin`,
 
 Releases go through dist (cargo-dist). It generates the release workflow,
 builds the four targets, attaches them to the GitHub release and pushes a
-binary formula to `denrou/homebrew-gh-prs`, which replaces
+binary formula to `denrou/homebrew-tap`, so gh-prs leaves that tap's
 `update-formula.yml`. It needs a token for the tap, stored as a secret.
 
 One thing to check on the first release: dist triggers on a tag push, and

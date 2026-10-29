@@ -58,7 +58,7 @@ project does not want.
   `uv lock`, commit `chore: release X.Y.Z` on `main`, have the user push,
   then `gh release create vX.Y.Z --target main`. The release event runs
   `.github/workflows/python-publish.yml` (PyPI trusted publishing), which
-  dispatches the Homebrew tap update in `denrou/homebrew-gh-prs`; that
+  dispatches the Homebrew tap update in `denrou/homebrew-tap`; that
   dispatch can race PyPI's index, so verify the formula moved and
   re-dispatch `update-formula.yml` if it did not.
 

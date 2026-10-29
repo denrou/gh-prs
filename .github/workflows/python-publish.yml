@@ -1,5 +1,5 @@
 # Publishes the package to PyPI when a GitHub release is published, then
-# triggers the Homebrew tap (denrou/homebrew-gh-prs) to regenerate its formula.
+# triggers the Homebrew tap (denrou/homebrew-tap) to regenerate its formula.
 # Same pipeline as denrou/ggit.
 
 name: Upload Python Package
@@ -65,4 +65,4 @@ jobs:
       - name: Trigger Homebrew tap update
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: gh workflow run update-formula.yml --repo denrou/homebrew-gh-prs
+        run: gh workflow run update-formula.yml --repo denrou/homebrew-tap -f formula=gh-prs

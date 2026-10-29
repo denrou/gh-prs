@@ -68,7 +68,7 @@ By default it shows only the PRs that need your attention:
 With [Homebrew](https://brew.sh/):
 
 ```bash
-brew install denrou/gh-prs/gh-prs
+brew install denrou/tap/gh-prs
 ```
 
 Or from [PyPI](https://pypi.org/project/gh-prs/):
