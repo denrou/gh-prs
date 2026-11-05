@@ -77,13 +77,18 @@ and Linux on x86_64, the two targets the release builds. Elsewhere, build it
 from the repository with a Rust toolchain:
 
 ```bash
-cargo install --git https://github.com/denrou/gh-prs.git
+cargo install --locked --git https://github.com/denrou/gh-prs.git
 ```
 
-Coming from the Python version (0.18.1 and earlier, on PyPI): `brew upgrade`
-moves to the binary, then `brew autoremove` drops the Python it no longer
-needs; if `uv tool install` put it in place, `uv tool uninstall gh-prs`
-removes it. The config, snooze and hide files carry over as they are.
+Coming from the Python version (0.18.1 and earlier, on PyPI), the config,
+snooze and hide files carry over as they are:
+
+- **Homebrew on Apple Silicon or x86_64 Linux:** `brew upgrade` moves to the
+  binary, then `brew autoremove` drops the Python it no longer needs.
+- **Homebrew elsewhere (an Intel Mac, arm64 Linux):** there is no binary for
+  you, so `brew uninstall gh-prs`, then build it with `cargo install` as
+  above.
+- **uv:** `uv tool uninstall gh-prs`, then install it one of the ways above.
 
 ### As a `gh` alias
 

@@ -80,8 +80,12 @@ formula=gh-prs -f version=X.Y.Z` by hand. The versions released on PyPI
 
 A library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
 code). The Python version (0.18.1 and earlier, on PyPI) was ported module by
-module and removed once the Rust one had run in its place; the stores,
-`--json` and the CLI stayed identical, so nothing migrates.
+module and removed once the Rust one had run in its place. The store files,
+the `--json` fields and the commands stayed identical, so nothing migrates;
+the few deliberate differences are an unrecognised review decision blocking
+a merge, an unrecognised review state counting as submitted for
+**new-commits**, the removed snooze flags failing without a hint, and
+`--json` never styled.
 
 - **`pr.rs`** — `PullRequest` and the type model the fail-safe rules rest on
   (see Type model below): `Reported<T>`, `Mergeable`, `ReviewDecision`,
@@ -141,7 +145,8 @@ Every fail-safe rule below is about unknown values, so the rule is:
 > Otherwise it is carried to the policy code, and the `match` there decides.
 
 - **Collapsed at parse time, because every consumer agrees:** `checks` (an
-  unrecognised or missing rollup becomes `Pending`), `stacked` (an unknown
+  unrecognised or missing rollup state, or a missing `commits` block, becomes
+  `Pending`; no rollup at all on the head commit is `NoneConfigured`), `stacked` (an unknown
   count becomes `true`), `unresolved_feedback` (one consumer).
 - **Carried to the policy code:** `mergeable` (**ready** wants positive
   evidence, while **review** keeps `UNKNOWN` visible), `review_decision`
@@ -179,7 +184,7 @@ error message, never a panic.
 
 Two layers in `gh/parse.rs`. Serde reads a node into raw structs that
 mirror the GraphQL shape: every nullable or omittable field is an `Option`
-with `#[serde(default)]`, and every connection's nodes an
+(absent reads as `None`), and every connection's nodes an
 `Option<Vec<Option<_>>>`, so a null list and null nodes both survive as
 unknowns. Then `to_pull_request()`, a pure function and the target of the
 parse tests, applies the fail-safe rules. A field with the wrong JSON type
@@ -239,7 +244,8 @@ through `gather()`: `MAX_PARALLEL` (8) workers on `std::thread::scope`
 pull the tasks, every error is collected, and any failure fails the whole
 fetch with the errors sorted into one message. Results come back in
 submission order, so the stable sort on `updated_at` breaks ties the same
-way on every run. No async runtime: about 20 requests per run at most. `reviewThreads` is gated by an
+way on every run. No async runtime: a run is a few dozen requests at most (24 for
+the default view, about 40 for `-a`). `reviewThreads` is gated by an
 `@include($withThreads)` directive and fetched only for PRs the `author`
 search matched, because hydrating each thread's last comment is the one
 measurably expensive fragment field (~+1s on `involves`, ~+3% on `author`;
@@ -281,7 +287,8 @@ Parsing). The same fail-safe direction applies
 to per-PR fields: unknown CI states map to `Pending`, and "ready" requires a
 positive `MERGEABLE` (GitHub reports `UNKNOWN` while recomputing
 mergeability). The CLI prints errors to stderr and exits `1` (`2` for a
-usage error, from clap). Ctrl-C is the default SIGINT, which the shell
+usage error, from clap or the CLI's own checks: a subcommand with view
+flags, `snooze --for` without refs, `--prune` with refs). Ctrl-C is the default SIGINT, which the shell
 reports as `130`; the stores are safe either way, since they are written
 through a rename.
 
@@ -397,7 +404,7 @@ A non-draft PR needs attention when any of these hold:
   `first: 50` cap — `all()` over a truncated set is _weaker_ than over the
   whole one, so a hidden review could otherwise fabricate the nudge;
   `to_pull_request()` sets `changes_requested.truncated` whenever the
-  connection comes back full (`REVIEW_PAGE_LIMIT`). `--json` prints an
+  connection comes back full with a standing review in hand (`REVIEW_PAGE_LIMIT`). `--json` prints an
   unknown commit as `""` and the truncation as one more `""` in
   `changesRequestedCommits`.
 
@@ -439,7 +446,7 @@ is a hard error (explicit user input); a bad config file only warns.
 
 Durations are read the way a person means them (`duration.rs`). Days and
 weeks count days on the machine's local calendar and end at the local
-midnight opening the target day — `Duration.until()` — so "snooze for a day"
+midnight opening the target day — `Duration::until()` — so "snooze for a day"
 at noon means "tomorrow morning", and "stale after 3 days" for a PR touched
 Monday afternoon means "from Thursday". Midnight rather than a configurable
 start-of-work hour: whatever time the user starts, the PR is waiting on the
@@ -575,8 +582,8 @@ Snoozing is exposed as subcommands, matching `gh`'s verb style
 (`gh pr close`): `gh prs snooze <pr>...` and `gh prs unsnooze <pr>...`, with
 the bare `gh prs snooze` listing the store (like `git branch`; `--for`
 without refs is rejected — it means a forgotten ref, not a listing request).
-The pre-subcommand flags (`--snooze`/`--unsnooze`/`--snoozed`) hard-error
-with a migration hint, and combining a subcommand with the view flags
+The pre-subcommand flags (`--snooze`/`--unsnooze`/`--snoozed`) are plain
+usage errors (exit `2`), and combining a subcommand with the view flags
 (`-c`/`-r`/`-a`, `--count`, `--json`, `--stale-after`) is rejected rather
 than silently ignored. Each subcommand takes one or more PR references,
 following `gh`'s own conventions: a bare number (`123`) or a full URL. A
@@ -668,7 +675,7 @@ evidence on every axis and the CLI runs in two phases:
    review policy applies). `--auto`
    hands checks and a pending review requirement to GitHub's auto-merge (it
    waits for them) but keeps blocking on `CHANGES_REQUESTED` — a human
-   objected. `--admin` mirrors GitHub's administrator bypass: checks and the
+   objected — and on an unrecognised decision. `--admin` mirrors GitHub's administrator bypass: checks and the
    review decision are not preflighted; the unconditional blockers still are
    (GitHub refuses drafts and conflicts even to admins, and stacking is about
    _where_ the merge lands, not permissions).
@@ -677,8 +684,9 @@ evidence on every axis and the CLI runs in two phases:
    the PRs not attempted are named so the user can rerun with just those.
    `--match-head-commit` pins each merge to the oid the preflight inspected,
    so a push landing in between makes GitHub refuse the merge instead of
-   merging a state nobody looked at. `merge_pr` refuses an empty oid outright
-   (a blocker already covers it; this is the belt to that brace).
+   merging a state nobody looked at. `merge_pr` takes an `Oid`, which cannot
+   be empty, and `cli/merge.rs` refuses a PR without a head before calling
+   it (a blocker already covers it; this is the belt to that brace).
 
 The bare `gh prs merge` (no refs) is a usage error today; merging every
 **ready** PR from the attention view is the natural follow-up, but it needs a
@@ -692,13 +700,13 @@ confirmation step before it can ship.
   scripts and with the stores the Python versions wrote: change them
   deliberately, with a conformance scenario.
 - `--json` is a scripting interface: plain UTF-8 JSON, never coloured.
-- Tables are drawn by hand (`cli/render.rs`), with no layout crate: no
-  headers or borders, left-aligned columns. On a narrow screen the title
+- Tables are drawn by hand (`cli/render.rs`), with no layout crate: a
+  title line with a count, then rows with no column headers or borders,
+  left-aligned. On a narrow screen the title
   shrinks first (down to 20 columns), then the repository (down to 8), then
-  the title again, each with an ellipsis; the number, author and date never
-  shrink. Width is `COLUMNS`, else the terminal's, else 80. When stdout is a
-  terminal, PR numbers are OSC 8 hyperlinks. `anstream` strips colour off a
-  terminal and honours `NO_COLOR`; `--no-color` forces that.
+  the title again, each with an ellipsis; the other columns never shrink. Width is `COLUMNS`, else the terminal's, else 80. PR numbers are OSC 8
+  hyperlinks. `anstream` strips colour and links off a terminal and honours
+  `NO_COLOR`; `--no-color` forces that.
 - GraphQL `statusCheckRollup.state` is normalized in `parse::checks()`;
   unknown future states map to `Pending` so "unrecognized" never counts as
   passing.
