@@ -1,11 +1,13 @@
-# Lint and test on every push to main. Agents commit straight to main, so
-# this is the safety net that catches what a local run missed.
+# Lint and test on every push to main and every pull request. The ruleset
+# on main requires the check job, so a pull request merges only once it
+# passed.
 
 name: CI
 
 on:
   push:
     branches: [main]
+  pull_request:
 
 permissions:
   contents: read
@@ -22,7 +24,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pytest
 
-  rust:
+  check:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
