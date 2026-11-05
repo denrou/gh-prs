@@ -1,3 +1,3 @@
 Warning: acme/widgets#41: GitHub sent state 'ARCHIVED', which this version of gh-prs doesn't know; it is read as unknown
 Error: https://github.com/acme/widgets/pull/40: state unknown, kept
-Error: https://github.com/acme/widgets/pull/41: state ARCHIVED not recognised, kept
+Error: https://github.com/acme/widgets/pull/41: state unknown, kept

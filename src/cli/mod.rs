@@ -171,13 +171,12 @@ fn prune_closed<E>(
             Reported::Known(state @ (PrState::Closed | PrState::Merged)) => {
                 Some(state.graphql_name().to_lowercase())
             }
-            // Deliberate: only CLOSED or MERGED is evidence the PR is gone.
-            // A state GitHub added since could still be an open one.
-            Reported::Unrecognised(state) => {
-                failures.push(format!("{url}: state {state} not recognised, kept"));
-                None
-            }
-            Reported::Missing => {
+            // Deliberate: only CLOSED or MERGED is evidence the PR is gone; a
+            // state GitHub added since could be an open one, and dropping a
+            // hide brings back a PR the user set aside. Reported, not silent,
+            // so an entry that can never be pruned doesn't go unnoticed.
+            // fetch_pr has already warned with the unrecognised value.
+            Reported::Unrecognised(_) | Reported::Missing => {
                 failures.push(format!("{url}: state unknown, kept"));
                 None
             }
@@ -194,6 +193,10 @@ fn prune_closed<E>(
         ui::out(&ui::paint("Nothing to prune.", ui::DIM));
     } else {
         if let Err(error) = save(entries) {
+            // The entries kept are still worth knowing about.
+            for failure in &failures {
+                ui::error(failure);
+            }
             ui::error(&error);
             return ExitCode::from(FAILURE);
         }
