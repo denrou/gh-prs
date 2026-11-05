@@ -1,4 +1,4 @@
-//! Black-box conformance suite (CLAUDE.md, Testing).
+//! Black-box conformance suite (ARCHITECTURE.md, Testing).
 //!
 //! Every directory under `scenarios/` runs the binary named by `GH_PRS_BIN`
 //! (default: this crate's binary) once and compares the outcome with its

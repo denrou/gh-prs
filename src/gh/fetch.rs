@@ -1,6 +1,6 @@
 //! Searches, hydration, single-PR lookups and the two write actions.
 //!
-//! Loading runs in two parallel phases (`CLAUDE.md`, Loading): one id-only
+//! Loading runs in two parallel phases (`ARCHITECTURE.md`, Loading): one id-only
 //! search per qualifier, then the union of ids hydrated in batches of
 //! [`HYDRATE_BATCH`]. GitHub answers HTTP 502 to any request running past
 //! ~10s, which a single hydrated 50-PR search reached; batches of 15 take

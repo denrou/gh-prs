@@ -35,7 +35,7 @@ tempfile = "3.27.0"
 
 [lints.clippy]
 # A `_ =>` arm on our own enums would quietly cancel the exhaustiveness the
-# fail-safe rules rely on (CLAUDE.md, Type model).
+# fail-safe rules rely on (ARCHITECTURE.md, Type model).
 wildcard_enum_match_arm = "deny"
 # Bad input must surface as an error message, never a panic.
 unwrap_used = "deny"

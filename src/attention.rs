@@ -1,7 +1,7 @@
 //! Why an enriched PR needs the viewer's attention.
 //!
 //! Pure policy over a [`PullRequest`] plus the clock; the rules and their
-//! fail-safe directions are described in `CLAUDE.md` (Attention logic). The
+//! fail-safe directions are described in `ARCHITECTURE.md` (Attention logic). The
 //! stale family is the one place that inverts the house direction: a nudge is
 //! additive and non-actionable, so an unknown age or review history keeps it
 //! quiet instead of fabricating it.
