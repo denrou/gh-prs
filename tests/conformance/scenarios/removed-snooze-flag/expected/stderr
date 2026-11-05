@@ -1,1 +1,5 @@
-Error: --snooze was replaced by a subcommand: try 'gh prs snooze <pr>...' (see --help)
+error: unexpected argument '--snooze' found
+
+Usage: gh prs [OPTIONS] [COMMAND]
+
+For more information, try '--help'.

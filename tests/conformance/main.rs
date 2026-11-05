@@ -1,10 +1,9 @@
-//! Black-box conformance suite (docs/rust-port.md, Testing).
+//! Black-box conformance suite (CLAUDE.md, Testing).
 //!
 //! Every directory under `scenarios/` runs the binary named by `GH_PRS_BIN`
 //! (default: this crate's binary) once and compares the outcome with its
-//! `expected/`. `BLESS=1` writes `expected/` from the run instead; scenarios
-//! are blessed against the Python version, so the Rust one must reproduce
-//! what Python does.
+//! `expected/`. `BLESS=1` writes `expected/` from the run instead, to be
+//! reviewed by hand: the expectations are the spec, not a snapshot.
 //!
 //! A scenario is `scenario.json`:
 //!
@@ -119,9 +118,6 @@ fn run_scenario(dir: &Path, target: &Path) -> Result<(), Failed> {
         .env("XDG_CONFIG_HOME", &config_home)
         .env("TZ", "UTC")
         .env("COLUMNS", "200")
-        // Deliberate: lets the Python version print UTF-8 under env_clear.
-        // Remove with the Python code at the switch.
-        .env("PYTHONUTF8", "1")
         .env(fake_gh::SCENARIO_VAR, dir.join("scenario.json"))
         .env(fake_gh::LOG_VAR, &log);
     if let Some(env) = scenario["env"].as_object() {
@@ -272,8 +268,8 @@ fn same_output(expected: &str, actual: &str, as_json: bool) -> bool {
     normalize(expected) == normalize(actual)
 }
 
-/// stderr as one run of words: the Python version wrapped long messages to
-/// the console width, the Rust one leaves that to the terminal.
+/// stderr as one run of words: where a long message wraps is not part of
+/// the contract.
 fn words(text: &str) -> Vec<&str> {
     text.split_whitespace().collect()
 }

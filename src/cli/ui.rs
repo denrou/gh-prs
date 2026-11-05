@@ -58,7 +58,7 @@ pub fn warn(message: &str) {
     ));
 }
 
-/// The width tables are laid out for: `COLUMNS` when set (as rich did),
+/// The width tables are laid out for: `COLUMNS` when set,
 /// else the terminal's, else 80.
 pub fn width() -> usize {
     std::env::var("COLUMNS")

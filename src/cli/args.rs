@@ -12,7 +12,8 @@ const REF_HELP: &str =
     bin_name = "gh prs",
     version,
     about = "List GitHub pull requests that need your attention.",
-    // argparse accepted unambiguous prefixes of long options; keep that.
+    // Deliberate: the Python versions (argparse) accepted unambiguous
+    // prefixes of long options, and scripts may rely on them.
     infer_long_args = true,
     group(ArgGroup::new("view").multiple(false)),
 )]

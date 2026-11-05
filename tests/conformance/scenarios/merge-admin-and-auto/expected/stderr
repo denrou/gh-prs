@@ -1,2 +1,5 @@
-usage: gh prs merge [-h] [-R OWNER/REPO] [--no-color] [--admin | --auto] PR [PR ...]
-gh prs merge: error: argument --auto: not allowed with argument --admin
+error: the argument '--admin' cannot be used with '--auto'
+
+Usage: gh prs merge --admin <PR>...
+
+For more information, try '--help'.

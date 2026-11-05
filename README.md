@@ -60,8 +60,6 @@ By default it shows only the PRs that need your attention:
 ## Prerequisites
 
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated (`gh auth login`)
-- Python 3.14+
-- [uv](https://docs.astral.sh/uv/)
 
 ## Install
 
@@ -73,17 +71,24 @@ brew trust denrou/tap
 brew install denrou/tap/gh-prs
 ```
 
-Or from [PyPI](https://pypi.org/project/gh-prs/):
+The formula installs the binary of the latest
+[release](https://github.com/denrou/gh-prs/releases): macOS on Apple Silicon
+and Linux on x86_64, the two targets the release builds. Elsewhere, build it
+from the repository with a Rust toolchain:
 
 ```bash
-uv tool install gh-prs
+cargo install --locked --git https://github.com/denrou/gh-prs.git
 ```
 
-Or straight from the repository:
+Coming from the Python version (0.18.1 and earlier, on PyPI), the config,
+snooze and hide files carry over as they are:
 
-```bash
-uv tool install gh-prs --from git+https://github.com/denrou/gh-prs.git
-```
+- **Homebrew on Apple Silicon or x86_64 Linux:** `brew upgrade` moves to the
+  binary, then `brew autoremove` drops the Python it no longer needs.
+- **Homebrew elsewhere (an Intel Mac, arm64 Linux):** there is no binary for
+  you, so `brew uninstall gh-prs`, then build it with `cargo install` as
+  above.
+- **uv:** `uv tool uninstall gh-prs`, then install it one of the ways above.
 
 ### As a `gh` alias
 
@@ -283,7 +288,3 @@ An unreadable or invalid config only warns and falls back to the defaults
 (3-day calendar threshold, no mute rules), so a typo never breaks the tool —
 and a broken `mute` list hides nothing rather than guessing which rules you
 meant.
-
-For status bars, prefer the `uv tool install` binary (`~/.local/bin/gh-prs`)
-over `uv run` inside the repo — it skips ~250 ms of project resolution per
-invocation.

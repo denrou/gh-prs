@@ -1,5 +1,5 @@
 //! The pull request as the rest of the tool sees it, and the type model the
-//! fail-safe rules rest on (docs/rust-port.md, Type model).
+//! fail-safe rules rest on (CLAUDE.md, Type model).
 //!
 //! An unknown is a value, not a default: it is collapsed while parsing only
 //! when every consumer agrees on the direction (`checks`, `stacked`,

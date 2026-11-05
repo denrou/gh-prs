@@ -5,31 +5,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-uv run gh-prs               # Run the CLI (default: PRs needing attention)
-uv run gh-prs -c            # PRs you created
-uv run gh-prs -r            # PRs awaiting your review
-uv run gh-prs merge 123     # Approve (if allowed) and squash-merge a PR — writes to GitHub
-uv run gh-prs hide 123      # Hide a PR from the attention view until unhidden
-uv run pytest               # Run tests
-uv run ruff check .         # Lint
-uv run ruff format .        # Format
-uv add <pkg>                # Add dependency
-uv add --dev <pkg>          # Add dev dependency
-
-# Rust port in progress (docs/rust-port.md)
+cargo run -- [args]         # Run the CLI (default: PRs needing attention)
+cargo run -- -c             # PRs you created
+cargo run -- -r             # PRs awaiting your review
+cargo run -- merge 123      # Approve (if allowed) and squash-merge a PR — writes to GitHub
+cargo run -- hide 123       # Hide a PR from the attention view until unhidden
 cargo fmt                   # Format
 cargo clippy --all-targets -- -D warnings  # Lint
 cargo test --lib            # Unit tests
-cargo test --test conformance              # Conformance suite vs the Rust binary
-GH_PRS_BIN=.venv/bin/gh-prs cargo test --test conformance  # Same suite vs Python
-BLESS=1 GH_PRS_BIN=.venv/bin/gh-prs cargo test --test conformance  # Rewrite expected/ from Python, then review the diff
+cargo test --test conformance              # Conformance suite
+BLESS=1 cargo test --test conformance      # Rewrite expected/ from the binary, then review the diff
+cargo install --path .      # Put the build in ~/.cargo/bin to try it for real
 ```
 
 Conformance scenarios live in `tests/conformance/scenarios/`, one directory
 each; the scenario format is documented at the top of
-`tests/conformance/main.rs` and `fake_gh.rs`. A new scenario is blessed
-against Python and its `expected/` reviewed by hand before it is committed:
-it is the spec the Rust version must reproduce.
+`tests/conformance/main.rs` and `fake_gh.rs`. A new or changed scenario is
+blessed and its `expected/` diff reviewed by hand before it is committed:
+`expected/` is the spec, so a bless that changes behaviour nobody meant to
+change is a regression, not an update.
 
 ## Workflow
 
@@ -84,67 +78,181 @@ formula=gh-prs -f version=X.Y.Z` by hand. The versions released on PyPI
 
 ## Architecture
 
-Nine-module design inside `gh_prs/`:
+A library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
+code). The Python version (0.18.1 and earlier, on PyPI) was ported module by
+module and removed once the Rust one had run in its place. The store files,
+the `--json` fields and the commands stayed identical, so nothing migrates;
+the few deliberate differences are an unrecognised review decision blocking
+a merge, an unrecognised review state counting as submitted for
+**new-commits**, the removed snooze flags failing without a hint, and
+`--json` never styled.
 
-- **`gh.py`** — Stateless wrapper around the `gh` CLI, relying on the user's
-  existing `gh auth` session. Exposes a `PullRequest` dataclass plus
-  `fetch_prs()`, `count_prs()`, `fetch_pr_head()`, `fetch_pr()`,
-  `approve_pr()`, `merge_pr()`, `ALL_QUALIFIERS`, `DEFAULT_STALE_AFTER`, and
-  the `GhError` exception. `approve_pr()`/`merge_pr()` are the only functions
-  in the codebase that write to GitHub.
-- **`merge.py`** — Pure merge policy for the `merge` subcommand:
+- **`pr.rs`** — `PullRequest` and the type model the fail-safe rules rest on
+  (see Type model below): `Reported<T>`, `Mergeable`, `ReviewDecision`,
+  `ReviewState`, `Checks`, `Oid`, `Labels`, `Role`, `Reason`.
+- **`attention.rs`** — Pure attention policy: `attention_reasons()`, the
+  **stale** and **stale-draft** nudges (`Staleness`, `DEFAULT_STALE_AFTER`).
+  No `gh` calls.
+- **`gh/`** — Stateless wrapper around the `gh` CLI, relying on the user's
+  existing `gh auth` session. `mod.rs` holds the `Runner` trait (run `gh`
+  with these arguments, return status, stdout, stderr), the real `GhCli`
+  runner with its 60 s timeout, the GraphQL envelope and `GhError`;
+  `queries.rs` the GraphQL text (`PR_FRAGMENT`); `parse.rs` the raw serde
+  types and `to_pull_request()`; `fetch.rs` `fetch_prs()`, `count_prs()`,
+  `fetch_pr()`, `fetch_pr_head()`, `resolve_pr()`, `approve_pr()` and
+  `merge_pr()`. `approve_pr()`/`merge_pr()` are the only functions in the
+  codebase that write to GitHub.
+- **`merge.rs`** — Pure merge policy for the `merge` subcommand:
   `merge_blockers()` (why a PR must not be merged now) and `should_approve()`
-  (approve first?). No `gh` calls, like `snooze.py`.
-- **`mute.py`** — Pure mute policy: `MuteRule` plus `is_muted()` /
+  (approve first?). No `gh` calls.
+- **`mute.rs`** — Pure mute policy: `MuteRule` plus `is_muted()` /
   `split_muted()`, deciding which fetched PRs a config rule silences for good
-  (a bot's bumps for a stack you don't own). No `gh` calls, like `merge.py`.
-- **`duration.py`** — Pure calendar arithmetic: the `Duration` value
-  (`amount` + `unit`, `"h"` or `"d"`) that `parse_duration` returns, its
-  `until()` deadline, and `add_days()`, the working-day step. No I/O;
-  imported by `gh.py`, `snooze.py`, and `config.py` alike.
-- **`store.py`** — JSON file I/O shared by the machine-managed stores:
+  (a bot's bumps for a stack you don't own). No `gh` calls.
+- **`duration.rs`** — Pure calendar arithmetic: the `Duration` value
+  (`amount` + `Unit`, hours or days) that `parse_duration()` returns, its
+  `until()` deadline, and `add_days()`, the working-day step. No I/O.
+- **`store.rs`** — JSON file I/O shared by the machine-managed stores:
   `store_path()`, `read_json()` (missing file → `None`, every other failure
-  raised as the caller's error type), `write_json()` (write-then-rename).
-  Shape validation stays with each store.
-- **`snooze.py`** — Local per-PR snooze store (`{PR url: {oid, until}}` JSON
-  at `$XDG_CONFIG_HOME/gh-prs/snooze.json`). Partitioning helpers over
-  `store.py`; no `gh` calls. Raises `SnoozeError`.
-- **`hide.py`** — Local per-PR hide store (`{PR url: {since}}` JSON at
+  an error for the caller to wrap), `write_json()` (write-then-rename,
+  sorted keys, 2-space indent), `format_timestamp()`. Shape validation stays
+  with each store.
+- **`snooze.rs`** — Local per-PR snooze store (`{PR url: {oid, until,
+reasons}}` JSON at `$XDG_CONFIG_HOME/gh-prs/snooze.json`):
+  `load_snoozes()`, `save_snoozes()`, `split_snoozed()`,
+  `normalize_pr_url()`. No `gh` calls. Errors are `SnoozeError`.
+- **`hide.rs`** — Local per-PR hide store (`{PR url: {since}}` JSON at
   `$XDG_CONFIG_HOME/gh-prs/hidden.json`): the user's standing decision that
-  a PR is not theirs, lifted only by `unhide`. Same shape as `snooze.py`;
-  raises `HideError`.
-- **`config.py`** — Human-authored settings (`{stale_after, skip_weekends,
+  a PR is not theirs, lifted only by `unhide`. Same shape as `snooze.rs`;
+  errors are `HideError`.
+- **`config.rs`** — Human-authored settings (`{stale_after, skip_weekends,
 mute}` JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from
   the machine-managed snooze store so a hand-edit can't corrupt snooze state.
-  Reuses `snooze.parse_duration` and owns `week_days()`, the working-week
-  rule; parses `mute` rules into `mute.MuteRule`; missing file → defaults;
-  raises `ConfigError`.
-- **`cli.py`** — Command-line interface (argparse + [rich](https://rich.readthedocs.io/)).
-  Fetches and prints grouped/colored tables. Entry point is `gh_prs.cli:main`.
+  Reuses `parse_duration()` and owns `week_days()`, the working-week rule;
+  parses `mute` rules into `MuteRule`; missing file → defaults; errors are
+  `ConfigError`.
+- **`cli/`** — Command-line interface: `args.rs` (clap definitions),
+  `mod.rs` (dispatch, settings, ref resolution, `prune_closed()`), `view.rs`
+  (the attention and list views; mute → hide → snooze), `render.rs` (tables
+  and `--json`), `ui.rs` (styles, width, spinner, hyperlinks), and one file
+  per subcommand family (`snooze.rs`, `hide.rs`, `merge.rs`).
+
+### Type model
+
+Every fail-safe rule below is about unknown values, so the rule is:
+
+> An unknown is a value, not a default. It is collapsed into a known value
+> while parsing only when every consumer agrees on which way to collapse it.
+> Otherwise it is carried to the policy code, and the `match` there decides.
+
+- **Collapsed at parse time, because every consumer agrees:** `checks` (an
+  unrecognised or missing rollup state, or a missing `commits` block, becomes
+  `Pending`; no rollup at all on the head commit is `NoneConfigured`), `stacked` (an unknown
+  count becomes `true`), `unresolved_feedback` (one consumer).
+- **Carried to the policy code:** `mergeable` (**ready** wants positive
+  evidence, while **review** keeps `UNKNOWN` visible), `review_decision`
+  (see Merging), `labels` (only the mute rules can say what an incomplete
+  list means), and the standing changes-requested reviews (only the stale
+  nudge reads them, and it inverts the usual fail direction).
+
+`Reported<T>` is a GitHub enum value as received: `Known(T)`,
+`Unrecognised(String)` (kept verbatim for `--json`), or `Missing`. An
+unrecognised value is also reported once per value through the fetch's
+warning callback: the contract with GitHub changed, and the code should
+catch up. `Oid` is never empty (an empty oid parses as `None`). `Role` and
+`Reason` declare their variants in the alphabetical order of their names,
+so a `BTreeSet`'s order is the sorted order the stores and `--json` use; a
+test pins it. The section display order is a separate constant
+(`render::SECTIONS`).
+
+The snooze invariant ("an open-ended snooze carries reasons") is a type,
+`Snooze::OpenEnded { oid, reasons }` versus `Snooze::Windowed { oid, until,
+reasons: Option<_> }`, read from JSON by `Snooze::from_json`, where `until`
+must be present (`null` or a string; a missing key is corruption) and an
+open-ended entry without reasons fails to load. `until` stays raw text, because an unparseable
+value means "expired, show the PR", not "corrupt store". Stored reasons stay
+strings rather than `Reason`: a name this version doesn't know simply
+doesn't match, so the snooze lapses and the PR shows.
+
+Guardrails in `Cargo.toml`: `clippy::wildcard_enum_match_arm` is denied (a
+`_ =>` arm on our own enums would quietly cancel the exhaustiveness the
+model relies on; on other crates' enums, such as `serde_json::Value`, the
+accessor methods are simpler than listing every variant), and so are
+`unwrap_used`/`expect_used` outside tests: bad input must surface as an
+error message, never a panic.
+
+### Parsing GitHub responses
+
+Two layers in `gh/parse.rs`. Serde reads a node into raw structs that
+mirror the GraphQL shape: every nullable or omittable field is an `Option`
+(absent reads as `None`), and every connection's nodes an
+`Option<Vec<Option<_>>>`, so a null list and null nodes both survive as
+unknowns. Then `to_pull_request()`, a pure function and the target of the
+parse tests, applies the fail-safe rules. A field with the wrong JSON type
+(say `totalCount: "3"`) is a serde error and fails the whole fetch with
+`GhError`, deliberately: GitHub's schema is typed, so a type change means
+the contract with `gh` changed, and we want to hear about it rather than
+run on assumptions that no longer hold.
+
+### Seams for tests
+
+- **`gh`:** the `Runner` trait. Unit tests pass a closure returning canned
+  output; the conformance suite puts a fake `gh` on `PATH`.
+- **Clock and time zone:** functions take `now: Timestamp` and
+  `tz: &TimeZone`; only the CLI reads the system clock and
+  `TimeZone::system()`. Tests pass `TimeZone::get("Europe/Paris")` for DST
+  cases, from jiff's bundled tz database (`tzdb-bundle-always`, a
+  dev-dependency feature), so they don't depend on the machine.
+- **Config home:** paths come from `XDG_CONFIG_HOME` and `HOME`, which the
+  conformance suite points at a temporary directory.
+
+### Testing
+
+Unit tests live next to the code (`#[cfg(test)]`). The conformance suite
+(`tests/conformance/`) is black-box: each scenario directory holds a
+`scenario.json` (argv, environment, viewer login, search results per
+qualifier, GraphQL nodes by id, PR lookups and `pr view` answers, injected
+failures, initial stores) and an `expected/` (exit code, stdout, stderr,
+the stores afterwards, and the log of write calls `gh` received). The fake
+`gh` is the test binary itself, symlinked as `gh` into a temporary `PATH`;
+it answers by meaning (a search for this qualifier, these ids, this URL),
+not by argument bytes, so it doesn't depend on batching or ordering.
+
+Comparison is exact for exit codes, the stores (as parsed JSON), `--json`,
+`--count` and the write-call log (which matters most for `merge`: the exact
+`--match-head-commit` oid, and that nothing was called when the preflight
+aborted). Stdout and stderr compare with whitespace collapsed, because
+column spacing and wrapping are not part of the contract; read-only `gh`
+calls are not compared. There is no clock injection in the binary:
+scenarios date PRs in 2001 (always stale, window elapsed) or 2099 (fresh,
+window open), and anything that depends on the exact current time is a unit
+test with `now` passed in.
 
 ### Loading (id searches, then batched hydration)
 
-`fetch_prs(qualifiers)` runs in two parallel phases. First, one
+`fetch_prs()` runs in two parallel phases. First, one
 `gh api graphql` search per qualifier (`author`, `review-requested`,
 `reviewed-by`, `assignee`, `involves`) returns node ids only, plus the
 viewer's login and `issueCount`. Then the union of ids — each PR once,
-however many searches matched it — is hydrated by `_hydrate()`
-(`nodes(ids:)`) in batches of `_HYDRATE_BATCH` (15): review decision,
+however many searches matched it — is hydrated by `hydrate()`
+(`nodes(ids:)`) in batches of `HYDRATE_BATCH` (15): review decision,
 mergeability, CI rollup state, `latestReviews`, `latestOpinionatedReviews`,
 `reviewRequests`, `reviewThreads` (resolution state plus each thread's last
 commenter). The split exists because GitHub answers HTTP 502 to any request
 running past ~10s, and a single hydrated 50-PR search reached it (seen on
 `involves` and `reviewed-by`); batches of 15 take 2–5s. Both phases go
-through `_gather()`, capped at `_MAX_PARALLEL` concurrent requests, where
-one failure fails the whole fetch. `reviewThreads` is gated by an
+through `gather()`: `MAX_PARALLEL` (8) workers on `std::thread::scope`
+pull the tasks, every error is collected, and any failure fails the whole
+fetch with the errors sorted into one message. Results come back in
+submission order, so the stable sort on `updated_at` breaks ties the same
+way on every run. No async runtime: a run is a few dozen requests at most (24 for
+the default view, about 40 for `-a`). `reviewThreads` is gated by an
 `@include($withThreads)` directive and fetched only for PRs the `author`
 search matched, because hydrating each thread's last comment is the one
 measurably expensive fragment field (~+1s on `involves`, ~+3% on `author`;
 `isResolved` alone costs nothing) and only the authored-only **unresolved**
 reason reads it. A PR deleted (null node) or positively closed/merged
 between the two phases is dropped: the searches only match open PRs.
-`attention_reasons` is computed by the pure `_attention_reasons()` helper
-(unit-tested in `tests/test_gh.py`).
+Each PR's reasons come from the pure `attention_reasons()`.
 
 Performance notes (measured once; exact figures drift, the ratios hold):
 
@@ -161,7 +269,7 @@ Performance notes (measured once; exact figures drift, the ratios hold):
   everything else. About a third of the search hits overlap across
   qualifiers, which the one-lookup-per-PR union saves; `-a` went from 8–12s
   to ~5s.
-- Each search is capped at `_SEARCH_LIMIT` (100) nodes; searches are
+- Each search is capped at `SEARCH_LIMIT` (100) nodes; searches are
   `sort:updated-desc`, so truncation keeps the most recently updated PRs, and
   when `issueCount` exceeds the cap `fetch_prs()` reports the truncation
   through its `on_warning` callback (the CLI prints it to stderr). Counts
@@ -170,16 +278,28 @@ Performance notes (measured once; exact figures drift, the ratios hold):
 ### Error handling
 
 "Error" must never look like "nothing to do" (critical for `--count` in status
-bars). All `gh` failures raise `GhError` — including per-qualifier search
+bars). All `gh` failures are a `GhError` — including per-qualifier search
 and per-batch lookup failures (partial results would silently hide PRs),
-subprocess timeouts (60 s), and any deviation from the expected GraphQL
-response envelope (validated in `_graphql()`/`_search()`/`_hydrate()`). The same fail-safe direction applies
-to per-PR fields: unknown CI states map to `PENDING`, and "ready" requires a
+subprocess timeouts (60 s, `wait-timeout` kills `gh`), any deviation from
+the expected GraphQL response envelope (validated in `graphql()`,
+`search()` and `hydrate()`), and a field of the wrong JSON type (see
+Parsing). The same fail-safe direction applies
+to per-PR fields: unknown CI states map to `Pending`, and "ready" requires a
 positive `MERGEABLE` (GitHub reports `UNKNOWN` while recomputing
-mergeability). The CLI prints errors to stderr and exits non-zero (130 on
-Ctrl-C).
+mergeability). The CLI prints errors to stderr and exits `1` (`2` for a
+usage error, from clap or the CLI's own checks: a subcommand with view
+flags, `snooze --for` without refs, `--prune` with refs). Ctrl-C is the default SIGINT, which the shell
+reports as `130`; the stores are safe either way, since they are written
+through a rename.
 
-### Attention logic (`_attention_reasons`)
+One error type per domain (`GhError`, `SnoozeError`, `HideError`,
+`ConfigError`, `DurationError`, each a message, through `thiserror`), kept
+apart on purpose: whether a failure degrades (the view warns and shows
+more) or is fatal (a subcommand must not overwrite a store it couldn't
+read) depends on which store failed and where, and separate types make
+every call site spell that out. No `anyhow`, which would erase that.
+
+### Attention logic (`attention.rs`)
 
 A non-draft PR needs attention when any of these hold:
 
@@ -192,7 +312,8 @@ A non-draft PR needs attention when any of these hold:
   a User, not through a Team).
 - **new-commits** — you reviewed someone else's PR (`APPROVED`,
   `CHANGES_REQUESTED`, `COMMENTED`, or `DISMISSED` — the latter for repos
-  that auto-dismiss stale reviews on push) and the head oid no longer
+  that auto-dismiss stale reviews on push — or a state this version doesn't
+  recognise, which counts as submitted) and the head oid no longer
   matches the oid your review was submitted against (`latestReviews.commit`
   vs `headRefOid`) — new commits or a rebase the author forgot to re-request
   review for. Commit identity is compared, not `committedDate`: committer
@@ -241,16 +362,15 @@ A non-draft PR needs attention when any of these hold:
   data rides only on the `author` search (see the loading section), which is
   also the only search that can grant the `author` role this reason requires.
 - **stale** — a soft nudge: you authored it, it's still awaiting review
-  (`_awaiting_review`), nothing else actionable fired (`not reasons`, so no
+  (`awaiting_review`), nothing else actionable fired (no
   `ready`/`ci-failed`/`conflict`/`unresolved`), and it has gone untouched (`updatedAt`)
   longer than the staleness threshold — time to ping the reviewers. The
   threshold is `DEFAULT_STALE_AFTER` (3 days), overridable via `config.json`'s
   `stale_after` or the `--stale-after` flag, counted in calendar days (or
-  working days when `skip_weekends` is set; see Configuration). Disabled entirely when
-  `stale_after` is `None` (config `null`) or `now`/`stale_after` aren't passed
-  to `_attention_reasons` (so a bare `_attention_reasons(pr)` never returns
-  it). The **stale** family is the one place that **inverts** the house
-  fail-safe — `_is_stale` for the age, `_changes_requested_addressed` for the
+  working days when `skip_weekends` is set; see Configuration). Disabled entirely without a
+  `Staleness` clock (config `stale_after: null`, or a caller passing `None`:
+  `attention_reasons(pr, None)` never returns it). The **stale** family is the one place that **inverts** the house
+  fail-safe — `Staleness::is_stale` for the age, `changes_requested_addressed` for the
   carve-out below — because a nudge is additive and non-actionable:
   defaulting an unknown to "stale" would fabricate a reason on a PR that may
   be perfectly fresh, or genuinely the author's to rework.
@@ -263,14 +383,14 @@ A non-draft PR needs attention when any of these hold:
   dismisses theirs, so a re-requested reviewer who never comes back leaves it
   stuck there indefinitely. The ball counts as back in the reviewers' court
   when both hold: every standing changes-requested review is against a
-  superseded commit (`_changes_requested_addressed` — each entry in
-  `changes_requested_commits` is an oid ≠ `headRefOid`) _and_ a review request
+  superseded commit (`changes_requested_addressed` — each entry in
+  `changes_requested.commits` is a known oid ≠ `headRefOid`) _and_ a review request
   is pending (`has_pending_review_request`, user or team). That second half is
   deliberately weak: `reviewRequests` carries no timestamp, so a request
   pending since the PR opened can't be told apart from a fresh re-request — it
   means somebody is on the hook, not that the author handed the PR back.
 
-  `changes_requested_commits` comes from `latestOpinionatedReviews`, **not**
+  `changes_requested` comes from `latestOpinionatedReviews`, **not**
   `latestReviews`: GitHub documents the latter as the reviews "that are not
   also pending review", so re-requesting a reviewer drops their review from it
   entirely — exactly the state this carve-out has to recognize.
@@ -280,11 +400,13 @@ A non-draft PR needs attention when any of these hold:
   branch protection, and the connection isn't limited to writers). Every
   uncertainty reads as _not_ answered and keeps the nudge silent: no standing
   review in hand (nobody objects, the data is missing, or the cap hid them
-  all), no `headRefOid`, or any review whose commit is unknown. That last case
-  covers the `first: 50` cap — `all()` over a truncated set is _weaker_ than
-  over the whole one, so a hidden review could otherwise fabricate the nudge;
-  `from_graphql` appends an `""` marker whenever the connection comes back
-  full (`_REVIEW_PAGE_LIMIT`).
+  all), no `headRefOid`, or any review whose commit is unknown. So does the
+  `first: 50` cap — `all()` over a truncated set is _weaker_ than over the
+  whole one, so a hidden review could otherwise fabricate the nudge;
+  `to_pull_request()` sets `changes_requested.truncated` whenever the
+  connection comes back full with a standing review in hand (`REVIEW_PAGE_LIMIT`). `--json` prints an
+  unknown commit as `""` and the truncation as one more `""` in
+  `changesRequestedCommits`.
 
 Drafts are deliberately parked WIP: **review**, **new-commits**, **ci-failed**
 (red CI is expected while iterating), and **ready** never fire on them. Two
@@ -298,9 +420,9 @@ authored-draft reasons do:
   of any review decision on the draft (the nudge is about the parked draft,
   not about waiting on reviewers), is suppressed while the draft is
   conflicting (**conflict** takes precedence), and shares **stale**'s
-  inverted fail direction (`_is_stale`) and `now`/`stale_after` gating.
+  inverted fail direction (`Staleness::is_stale`) and its gating.
 
-### Configuration (`config.py`, applied in `cli.py`)
+### Configuration (`config.rs`, applied in `cli/`)
 
 User settings live in `$XDG_CONFIG_HOME/gh-prs/config.json`, separate from the
 machine-managed `snooze.json` (opposite fail-safe needs; a hand-edit must not
@@ -309,13 +431,12 @@ and **stale-draft** nudges; the third (`mute`) is covered in its own section
 below:
 
 - `stale_after` — a duration string (`"3d"`, `"1w"`) parsed by
-  `snooze.parse_duration`, or `null` to disable both nudges.
+  `parse_duration()`, or `null` to disable both nudges.
 - `skip_weekends` — `true` leaves Saturdays and Sundays out of that
   threshold and out of snooze windows. Anything but a JSON boolean is an
-  error — `1` in particular, since `bool` subclasses `int` and a bare
-  `isinstance` check would silently accept it.
+  error — `1` in particular, which a truthiness check would accept.
 
-Both are read together (`_settings`): the threshold means one thing in
+Both are read together (`cli::settings()`): the threshold means one thing in
 calendar days and another in working days, so reading one without the other
 would misjudge every age. The view and `snooze` read them, and they degrade
 to defaults with an on-stderr warning on any error (the tool never writes the
@@ -323,9 +444,9 @@ file, so there is nothing to clobber). Resolution order for the threshold:
 `--stale-after` flag → `config.json` → `DEFAULT_STALE_AFTER`. A bad flag value
 is a hard error (explicit user input); a bad config file only warns.
 
-Durations are read the way a person means them (`duration.py`). Days and
+Durations are read the way a person means them (`duration.rs`). Days and
 weeks count days on the machine's local calendar and end at the local
-midnight opening the target day — `Duration.until()` — so "snooze for a day"
+midnight opening the target day — `Duration::until()` — so "snooze for a day"
 at noon means "tomorrow morning", and "stale after 3 days" for a PR touched
 Monday afternoon means "from Thursday". Midnight rather than a configurable
 start-of-work hour: whatever time the user starts, the PR is waiting on the
@@ -334,14 +455,14 @@ exact span. Under `skip_weekends` days are working days (`add_days()`, a
 closed form, so a PR open for years costs the same as one open for hours):
 the first working day after a Friday _or_ a weekend is Monday. Hours under
 `skip_weekends` differ by caller: a snooze takes them literally, while the
-staleness clock stops over the weekend (`_working_elapsed`, wall-clock, so
+staleness clock stops over the weekend (`working_elapsed`, wall-clock, so
 72 working hours after Thursday 10:00 is Tuesday 10:00 even across a DST
 change). `week_days()` makes a `w` five days under `skip_weekends` — `"1w"`
 stays a same-weekday anniversary — which is why `parse_duration` takes
 `week_days` rather than owning the policy. Both `--stale-after` and
 `snooze --for` are parsed with the config's own weekend policy, so a flag
 overrides a value, never how a `w` is read. `parse_duration` caps every
-duration at a century (`_MAX_DAYS`), so no deadline can overflow `datetime`.
+duration at a century (`MAX_DAYS`), so no deadline can overflow a date.
 
 Counting days bends two fail-safe rules, deliberately. For **stale**, the
 deadline is the midnight opening the day, so the nudge comes up to a day
@@ -352,7 +473,7 @@ time tomorrow), so the PR usually comes back sooner; only `skip_weekends`
 lengthens a window, by carrying a Friday "tomorrow" over to Monday — which is
 what "tomorrow" means at work.
 
-### Muting (`mute.py`, `config.py`, applied in `cli.py`)
+### Muting (`mute.rs`, `config.rs`, applied in `cli/view.rs`)
 
 A snooze silences one state of one PR; a mute rule silences a _kind_ of PR
 for good — the motivating case is a Renovate app whose Helm bumps request
@@ -393,11 +514,12 @@ labels, the repository is an identity field and always known, so the check
 needs no completeness evidence.
 
 Muting hides, so it follows the snooze store's fail-safe direction: positive
-evidence only. `from_graphql` reads `labels(first: 20)` (`_LABEL_PAGE_LIMIT`,
-pinned by a test like the review cap) into `labels` plus `labels_complete`,
-which is True only when the block is present, its nodes are all well-formed,
-and the count is below the cap. An `unless_labels` exemption can be ruled
-out only when `labels_complete` holds — otherwise a hidden label might be the
+evidence only. `to_pull_request()` reads `labels(first: 20)`
+(`LABEL_PAGE_LIMIT`, pinned by a test like the review cap) into
+`Labels::Complete` only when the block is present, its nodes are all
+well-formed, and the count is below the cap; anything else is
+`Labels::Partial`. An `unless_labels` exemption can be ruled out only on a
+complete list — otherwise a hidden label might be the
 exempting one and the PR shows; an unconditional rule (no `unless_labels`)
 needs no label evidence and mutes on the author alone. A PR with `author` in
 its `roles` is never muted, whatever the rules say: authored reasons are the
@@ -408,11 +530,11 @@ consults the rules; `-c`/`-r`/`-a` and `--json` stay exact. `split_muted`
 runs _before_ `split_hidden` and `split_snoozed`, so a lingering snooze on a
 now-muted PR does not inflate the "snoozed hidden" line, and the view prints a dim
 "N PR(s) muted by config" on stderr counting only muted PRs that would have
-needed attention. The rules ride on the same `_settings` read as the
+needed attention. The rules ride on the same `settings()` read as the
 staleness settings, so a broken config warns once and yields no rules —
 hiding nothing.
 
-### Snoozing (`snooze.py`, applied in `cli.py`)
+### Snoozing (`snooze.rs`, applied in `cli/`)
 
 `gh prs snooze <pr>...` records each PR's head oid, the PR's
 `attention_reasons` at snooze time (a sorted list, captured by fetching the
@@ -430,16 +552,16 @@ isn't is a per-ref failure, with a hint to pass `--for`) and the capture
 fetch must succeed (a failure aborts the command rather than degrading).
 With `--for` the window is a fallback, so there the capture stays
 best-effort — omitted with a warning when the PR isn't in the view or the
-fetch fails. The invariant is structural: `make_entry` and `load_snoozes`
-both refuse an entry whose `until` is `null` without `reasons`, so no path
-can hide a PR on its head alone for good. The same fail-safe direction as
+fetch fails. The invariant is structural: `Snooze::OpenEnded` cannot exist
+without reasons, and `load_snoozes` refuses an entry whose `until` is
+`null` without them, so no path can hide a PR on its head alone for good. The same fail-safe direction as
 everywhere else applies: an unknown oid, an uncomparable timestamp, a moved
 head, a changed reason set, an elapsed window, or an unreadable store all
 _show_ the PR (a corrupt store only warns on the view path, but is fatal for
 the `snooze`/`unsnooze` subcommands, which must not clobber the file —
 including the bare listing, which must not render a half-parsed store). A
-_missing_ `until` key is corruption (`load_snoozes` rejects it, `is_expired`
-reads it as elapsed), never "forever": only an explicit `null` means
+_missing_ `until` key is corruption (`load_snoozes` rejects it, and an
+unparseable `until` reads as elapsed in `Snooze::is_expired`), never "forever": only an explicit `null` means
 open-ended, so a half-written entry cannot hide a PR indefinitely. Entries
 written before reason-tracking (no `reasons` key) keep working on
 head-and-window alone. Dead entries are pruned — with an on-stderr "snooze
@@ -452,7 +574,7 @@ on absence would lose live snoozes) and pruned quietly once it elapses. An
 open-ended entry has no window to elapse, so like a hide it would accumulate
 for closed and merged PRs: `gh prs snooze --prune` is the explicit,
 network-bound clean-up, sharing `hide --prune`'s implementation
-(`_prune_closed`) and rules — drop only on positive evidence that the PR is
+(`prune_closed()`) and rules — drop only on positive evidence that the PR is
 no longer `OPEN`, keep and report anything that can't be inspected, reject
 PR arguments.
 
@@ -460,17 +582,17 @@ Snoozing is exposed as subcommands, matching `gh`'s verb style
 (`gh pr close`): `gh prs snooze <pr>...` and `gh prs unsnooze <pr>...`, with
 the bare `gh prs snooze` listing the store (like `git branch`; `--for`
 without refs is rejected — it means a forgotten ref, not a listing request).
-The pre-subcommand flags (`--snooze`/`--unsnooze`/`--snoozed`) hard-error
-with a migration hint, and combining a subcommand with the view flags
+The pre-subcommand flags (`--snooze`/`--unsnooze`/`--snoozed`) are plain
+usage errors (exit `2`), and combining a subcommand with the view flags
 (`-c`/`-r`/`-a`, `--count`, `--json`, `--stale-after`) is rejected rather
 than silently ignored. Each subcommand takes one or more PR references,
 following `gh`'s own conventions: a bare number (`123`) or a full URL. A
 bare number is scoped by `-R/--repo owner/repo`, or — when that's omitted —
 the repository of the current directory. Bare numbers are resolved through
-`gh.resolve_pr()` (a `gh pr view` call), so their canonical URL and host
+`resolve_pr()` (a `gh pr view` call), so their canonical URL and host
 come straight from `gh` and enterprise instances work without host-specific
 URL construction; a full URL is canonicalized offline by
-`normalize_pr_url()` (keeping `snooze.py` free of `gh` calls), so
+`normalize_pr_url()` (keeping `snooze.rs` free of `gh` calls), so
 `gh prs unsnooze <url>` needs no network. The old `owner/repo/123` /
 `owner/repo#123` shorthand was removed in favor of a number plus `--repo`;
 both forms now hard-error. References resolve independently: a bad or
@@ -478,7 +600,7 @@ not-snoozed one is reported to stderr and skipped while the rest are
 applied, the store is written once, and a partial batch exits non-zero —
 never clobbering the file.
 
-### Hiding (`hide.py`, applied in `cli.py`)
+### Hiding (`hide.rs`, applied in `cli/`)
 
 `gh prs hide <pr>...` records the PR's URL and a `since` timestamp — nothing
 else — and the default attention view (table and `--count`) withholds the
@@ -517,18 +639,18 @@ repository or a full URL canonicalized offline (so `hide <url>` and
 partial batch exiting non-zero, and hiding an already hidden PR is a no-op
 that keeps the original `since` rather than an error.
 
-### Merging (`merge.py`, `gh.py`, applied in `cli.py`)
+### Merging (`merge.rs`, `gh/`, applied in `cli/merge.rs`)
 
 `gh prs merge <pr>...` is the tool's only write path to GitHub: per PR it runs
 `gh pr review --approve` (when `should_approve`: the viewer is not the author
 — GitHub rejects self-approval — and has no standing approval) and then
 `gh pr merge --squash --delete-branch --match-head-commit <oid>`, with
 `--admin` or `--auto` passed through (mutually exclusive, enforced by
-argparse). Refs follow the snooze conventions (bare number + `-R`, or URL;
-duplicates collapse to one), resolved to a URL by `_ref_to_url`, then
+clap). Refs follow the snooze conventions (bare number + `-R`, or URL;
+duplicates collapse to one), resolved to a URL by `ref_to_url()`, then
 inspected with `fetch_pr(url)` — a GraphQL `resource(url:)` lookup that
-reuses `_PR_FRAGMENT` so every field carries the exact semantics of a search
-node (normalized `checks_state`, `stacked`, `my_review_state`, …), plus the
+reuses `PR_FRAGMENT` so every field carries the exact semantics of a search
+node (normalized `checks`, `stacked`, `my_review`, …), plus the
 `state` field the fragment now carries; the `author` role is set from the
 viewer login, no other roles or attention reasons. Enterprise hosts get
 `--hostname` from the URL.
@@ -545,12 +667,15 @@ evidence on every axis and the CLI runs in two phases:
    `MERGEABLE` (`CONFLICTING` and `UNKNOWN` alike), no `headRefOid`, or
    **stacked** — the check GitHub itself doesn't make (it reports a stacked
    PR mergeable) and the reason the preflight exists at all. Without flags,
-   `checks_state` must be `SUCCESS` or `""` and `review_decision` must not
-   block: `CHANGES_REQUESTED` always does; `REVIEW_REQUIRED` does unless the
-   viewer's own imminent approval may satisfy it (`should_approve`). `--auto`
+   checks must be `Success` or `NoneConfigured` and `review_decision` must
+   not block: `CHANGES_REQUESTED` always does; `REVIEW_REQUIRED` does unless
+   the viewer's own imminent approval may satisfy it (`should_approve`); a
+   decision this version doesn't recognise does too (a value GitHub adds
+   later must not let a merge through), while a missing one passes (no
+   review policy applies). `--auto`
    hands checks and a pending review requirement to GitHub's auto-merge (it
    waits for them) but keeps blocking on `CHANGES_REQUESTED` — a human
-   objected. `--admin` mirrors GitHub's administrator bypass: checks and the
+   objected — and on an unrecognised decision. `--admin` mirrors GitHub's administrator bypass: checks and the
    review decision are not preflighted; the unconditional blockers still are
    (GitHub refuses drafts and conflicts even to admins, and stacking is about
    _where_ the merge lands, not permissions).
@@ -559,8 +684,9 @@ evidence on every axis and the CLI runs in two phases:
    the PRs not attempted are named so the user can rerun with just those.
    `--match-head-commit` pins each merge to the oid the preflight inspected,
    so a push landing in between makes GitHub refuse the merge instead of
-   merging a state nobody looked at. `merge_pr` refuses an empty oid outright
-   (a blocker already covers it; this is the belt to that brace).
+   merging a state nobody looked at. `merge_pr` takes an `Oid`, which cannot
+   be empty, and `cli/merge.rs` refuses a PR without a head before calling
+   it (a blocker already covers it; this is the belt to that brace).
 
 The bare `gh prs merge` (no refs) is a usage error today; merging every
 **ready** PR from the attention view is the natural follow-up, but it needs a
@@ -568,13 +694,23 @@ confirmation step before it can ship.
 
 ## Notes
 
-- `ruff` rule `E501` (line length) is not enforced.
-- `--json` is a scripting interface: to a pipe, or under `--no-color`, it
-  goes through `json.dumps` rather than rich's `print_json`, which keeps bold
-  attributes under `no_color` and emits colors under `FORCE_COLOR`. Only an
-  interactive terminal without the flag gets the styled rendering.
-- GraphQL `statusCheckRollup.state` is normalized via `_ROLLUP_STATE`; unknown
-  future states map to `PENDING` so "unrecognized" never counts as passing.
+- The CLI, exit codes (`0` success, `1` failure or partial batch, `2` usage
+  error), the store files and `--json` (field names, order, `""` for a
+  missing value, sorted `roles` and `attentionReasons`) are a contract with
+  scripts and with the stores the Python versions wrote: change them
+  deliberately, with a conformance scenario.
+- `--json` is a scripting interface: plain UTF-8 JSON, never coloured.
+- Tables are drawn by hand (`cli/render.rs`), with no layout crate: a
+  title line with a count, then rows with no column headers or borders,
+  left-aligned. On a narrow screen the title
+  shrinks first (down to 20 columns), then the repository (down to 8), then
+  the title again, each with an ellipsis; the other columns never shrink. Width is `COLUMNS`, else the terminal's, else 80. PR numbers are OSC 8
+  hyperlinks. `anstream` strips colour and links off a terminal and honours
+  `NO_COLOR`; `--no-color` forces that.
+- GraphQL `statusCheckRollup.state` is normalized in `parse::checks()`;
+  unknown future states map to `Pending` so "unrecognized" never counts as
+  passing.
 - PR titles are attacker-controlled: they are stripped of control characters
-  at ingestion (`from_graphql`) and markup-escaped at render (`_title_cell`).
-  Keep both when touching those paths.
+  at ingestion (`to_pull_request()`), which protects the terminal. Output is
+  built from styled segments, so a title can never be read as markup. Keep
+  the stripping when touching that path.
