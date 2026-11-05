@@ -93,10 +93,12 @@ snooze and hide files carry over as they are:
 ### As a `gh` alias
 
 ```bash
-gh alias set --shell prs 'gh-prs'
+gh alias set --shell prs 'gh-prs "$@"'
 ```
 
-Then simply run:
+The `"$@"` matters: a shell alias receives only the arguments its expansion
+names, so without it `gh prs -c` would quietly run the default view. Then
+simply run:
 
 ```bash
 gh prs
