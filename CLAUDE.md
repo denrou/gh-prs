@@ -21,34 +21,11 @@ Conformance scenarios live in `tests/conformance/scenarios/`, one directory each
 
 ## Workflow
 
-Denis's personal project (`github.com/denrou/gh-prs`), outside the Centreon organisation. The Centreon conventions (`/create-pr`, `/check-pr`, Jira references) do not apply, and `/create-pr` must not be used. The workflow is the one `denrou/slack` runs.
+Denis's personal project (`github.com/denrou/gh-prs`, public, MIT). It runs the pull request flow of Denis's `personal-repos.md` rule (branches, squash merges, review, merge, release, ideas, backlog); only what this repository does differently is written here.
 
-Denis leads the project as product owner; Claude is the developer and owns the code, its architecture and its quality.
-
-- **One branch and one pull request per change (since 2026-11-05).** Until then changes were committed straight on `main` and Denis pushed them, which kept one session working at a time and turned each change into a release. Now each session works on its own branch (`feat/…`, `fix/…`, `docs/…`, `chore/…`), from `origin/main` after a fetch, in its own worktree when sessions run side by side. Format, lint and test before each commit; run Prettier on any Markdown touched. `ARCHITECTURE.md`, the README and the decisions below change in the same pull request as the code they describe.
-- **`main` takes squash-merged pull requests only.** A ruleset requires the pull request and CI's `check` job, and the pull request's title and body become the commit on `main`: the title is a conventional commit (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`), the body is written as a commit body (writing-voice rule), with `Closes #N` for the issues it settles.
-- **The branch is pushed and the pull request opened once the change is ready** (formatted, linted, tested, the docs that describe it updated), without waiting to be asked: Denis asked for it on 2026-11-05. When `main` moves under an open pull request, merge `main` into the branch: rebasing a pushed branch would take a force push.
-- **Each pull request is reviewed on its own, before it is merged**: `/code-review` on it, plus the pr-review-toolkit agents when it is large. Fix what matters in the branch; what is left out on purpose becomes an issue labelled `deferred`, with its reason and the review it came from, linked from the pull request.
-- **Claude merges once the review is through (since 2026-11-05).** A pull request is squash-merged (`gh pr merge --squash`, with its title and body as the commit) once `/code-review` ran on it, its blocking findings are fixed in the branch, the rest are `deferred` issues linked from it, and CI's `check` passed. One exception: a change to what `gh prs merge` does or reads (`merge.rs`, `cli/merge.rs`, the approve and merge calls, and the parsing of any field the preflight checks: state, draft, mergeability, head, stacked, checks, review decision) waits for Denis to try the branch, because merging is the one irreversible path and the conformance suite only knows the fake `gh`'s idea of GitHub's answers. He tries it (`cargo install --locked --path <checkout>` puts it in `~/.cargo/bin`), since only he runs it against real pull requests.
-- **Merging is not releasing.** Denis runs `main`; a release is the Homebrew binary, cut when a batch is worth it. Never bump the version or create a tag on your own.
-- **A release, when Denis asks for it**:
-  1. Fetch, then read the pull requests merged since the last tag (`git log v<previous>..origin/main`, one squash commit each) and draft the notes the GitHub Release shows: a few Markdown bullets on what changed for whoever uses the tool, a new subcommand or flag, a behaviour that moved, a fix that was felt, not the list of pull requests, which the compare link GitHub adds below them already gives.
-  2. Open a `chore: release X.Y.Z` pull request that bumps `version` in `Cargo.toml` (`cargo build` so `Cargo.lock` follows), with the notes in its body, and merge it once CI passes.
-  3. Once it is merged, fetch and create the annotated tag on its merge commit, not on `origin/main`, which may already hold a later merge that is in neither the notes nor the review of the release: `git tag -a vX.Y.Z --cleanup=whitespace -F <file> "$(gh pr view <n> --json mergeCommit --jq .mergeCommit.oid)"`, the message being `vX.Y.Z`, a blank line, then the notes (`--cleanup=whitespace` keeps a line that starts with `#`, which git would otherwise strip as a comment). Then push it: `git push origin vX.Y.Z`.
-  4. Watch the release with `gh run watch` and the tap with `gh run watch --repo denrou/homebrew-tap`, then report to Denis what shipped, with the notes.
-
-  The tag push runs `.github/workflows/release.yml`: it checks the tag against the crate version and reads its notes (a tag without them fails there, before the builds), lints and tests, builds the macOS arm64 and Linux x86_64 binaries, and publishes the GitHub Release with the tag's notes and the compare link, the archives (`gh-prs-vX.Y.Z-<target>.tar.gz`) and `checksums.txt`. Its last job asks the Homebrew tap (`denrou/homebrew-tap`, shared with slack and ggit) to rewrite its formula from `checksums.txt`; that job needs the `GH_TOKEN` secret on the repository and is skipped without it, in which case run `gh workflow run update-formula.yml --repo denrou/homebrew-tap -f formula=gh-prs -f version=X.Y.Z` by hand and watch it with `gh run watch --repo denrou/homebrew-tap`. Check the formula through `gh api repos/denrou/homebrew-tap/contents/Formula/gh-prs.rb`, not raw.githubusercontent.com, whose cache shows the old one for minutes. `.github/workflows/ci.yml` runs fmt, clippy and the tests on every pull request and every push to `main`.
-
+- **Denis tries first** a change to what `gh prs merge` does or reads (`merge.rs`, `cli/merge.rs`, the approve and merge calls, and the parsing of any field the preflight checks: state, draft, mergeability, head, stacked, checks, review decision), because merging is the one irreversible path and the conformance suite only knows the fake `gh`'s idea of GitHub's answers. Only he runs it against real pull requests.
+- **Release.** The version is `version` in `Cargo.toml` (`cargo build` so `Cargo.lock` follows), and the formula is `gh-prs`. The tag push runs `.github/workflows/release.yml`: it checks the tag against the crate version and reads its notes (a tag without them fails there, before the builds), lints and tests, builds the macOS arm64 and Linux x86_64 binaries, publishes the GitHub Release with the tag's notes and the compare link, the archives (`gh-prs-vX.Y.Z-<target>.tar.gz`) and `checksums.txt`, then asks `denrou/homebrew-tap` (shared with slack and ggit) to rewrite the formula. `.github/workflows/ci.yml` runs fmt, clippy and the tests on every pull request and every push to `main`.
 - **Live checks.** The views only read GitHub, so `cargo run -- --json`, `-c`, `-r`, `-a` and `--count` can be run from here against Denis's account to check an output. **Never run `merge` from here**, not even to see an error path: it approves and merges real pull requests. `snooze`, `unsnooze`, `hide` and `unhide` write Denis's own stores, so run them only with `XDG_CONFIG_HOME` pointing at a temporary directory; the conformance suite covers them otherwise.
-
-## Ideas
-
-Denis asks for enhancements, fixes and features as they come to him in use, and wants a reaction, not an order taken. Give each one a moment of thought before building:
-
-- When it is right as stated, build it, no question asked; one line on why it holds is enough.
-- When it needs more thought, or another approach serves the same want better (a smaller change, another flag, a reason that already covers it, a cost it would carry later), say so first: the want as understood, the concern, the alternative with its trade-off, and a lean. Then build what he picks.
-
-An idea not built now becomes an issue labelled `enhancement`, with the concern and the lean when there is one. A concern about one of several asks never holds up the others.
 
 ## Decisions
 
@@ -61,7 +38,3 @@ Written down because none of them can be read from the code.
 - **Public repo, MIT**, like slack.
 
 A decision taken but not built yet lives in its issue, with the design: the stale nudge ignoring merges of the base branch (2026-10-27) is #21.
-
-## Backlog
-
-In GitHub issues: `enhancement` for an idea not built yet, `deferred` for what a review left out on purpose, with its reason and the review it came from. Before changing a module, `gh issue list --label deferred --search <module or symbol>` shows what was left there to pick up when the code around it moves.
