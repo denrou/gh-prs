@@ -574,7 +574,7 @@ mod tests {
 
         #[test]
         fn unrecognised_review_state_flags() {
-            // Deliberately unlike the Python version, which stayed quiet.
+            // Deliberate: an unknown state must never read as nothing to do.
             let pr = PullRequest {
                 my_review: Some(MyReview {
                     state: Reported::Unrecognised("SUPERSEDED".to_owned()),

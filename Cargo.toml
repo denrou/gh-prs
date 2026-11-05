@@ -1,6 +1,5 @@
 [package]
 name = "gh-prs"
-# Kept equal to pyproject.toml until the switch (docs/rust-port.md).
 version = "0.18.1"
 edition = "2024"
 rust-version = "1.85"
@@ -36,7 +35,7 @@ tempfile = "3.27.0"
 
 [lints.clippy]
 # A `_ =>` arm on our own enums would quietly cancel the exhaustiveness the
-# fail-safe rules rely on (docs/rust-port.md, Type model).
+# fail-safe rules rely on (CLAUDE.md, Type model).
 wildcard_enum_match_arm = "deny"
 # Bad input must surface as an error message, never a panic.
 unwrap_used = "deny"

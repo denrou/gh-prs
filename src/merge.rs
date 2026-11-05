@@ -95,7 +95,7 @@ pub fn merge_blockers(pr: &PullRequest, mode: MergeMode) -> Vec<String> {
                 blockers.push("is still awaiting review".to_owned());
             }
         }
-        // Deliberately unlike the Python version, which let it through.
+        // Deliberate: a decision GitHub adds later must not let a merge through.
         Reported::Unrecognised(decision) => {
             blockers.push(format!(
                 "has a review decision this version doesn't know ({decision})"
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn unrecognised_review_decision_blocks_unless_admin() {
-        // Never merge on uncertain data; the Python version let it through.
+        // Never merge on uncertain data.
         let pr = PullRequest {
             review_decision: Reported::Unrecognised("QUEUED".to_owned()),
             ..clean()

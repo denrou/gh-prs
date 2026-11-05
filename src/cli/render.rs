@@ -269,7 +269,7 @@ struct JsonPr<'a> {
     head_ref_oid: &'a str,
     review_requested_explicitly: bool,
     /// `""` for a review against an unknown commit, and one more `""` when
-    /// the connection was truncated, as the Python version printed it.
+    /// the connection was truncated: the `--json` shape scripts already read.
     changes_requested_commits: Vec<&'a str>,
     has_pending_review_request: bool,
     unresolved_feedback: bool,

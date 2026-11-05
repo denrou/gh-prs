@@ -60,7 +60,7 @@ pub fn write_json(path: &Path, data: &Value) -> Result<(), String> {
         fs::create_dir_all(dir).map_err(fail)?;
     }
     // serde_json's map keeps keys sorted (no `preserve_order` feature), as
-    // Python's sort_keys did, so a store rewritten by either shows no diff.
+    // the Python versions wrote them, so upgrading leaves no diff in a store.
     let text = serde_json::to_string_pretty(data)
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     let mut tmp_name = path.file_name().unwrap_or_default().to_owned();
@@ -71,8 +71,8 @@ pub fn write_json(path: &Path, data: &Value) -> Result<(), String> {
 }
 
 /// A timestamp as the stores write it: to the second, with the offset of
-/// `tz` (`2027-09-03T12:30:37+00:00`), the form Python's
-/// `isoformat(timespec="seconds")` produced.
+/// `tz` (`2027-09-03T12:30:37+00:00`), the form the
+/// Python versions wrote.
 #[must_use]
 pub fn format_timestamp(timestamp: Timestamp, tz: &TimeZone) -> String {
     timestamp
@@ -119,8 +119,8 @@ mod tests {
 
     #[test]
     fn written_like_python_did() {
-        // Sorted keys, two-space indent, trailing newline: a store rewritten
-        // by the other version shows no diff.
+        // Sorted keys, two-space indent, trailing newline: a store the Python
+        // versions wrote shows no diff once rewritten.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.json");
         write_json(
