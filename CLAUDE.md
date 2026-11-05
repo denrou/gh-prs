@@ -54,13 +54,33 @@ project does not want.
   request.
 
 - **Offer a release after every landed change.** Once the push is done, ask
-  whether to cut one. A release is: bump `version` in `pyproject.toml`, run
-  `uv lock`, commit `chore: release X.Y.Z` on `main`, have the user push,
-  then `gh release create vX.Y.Z --target main`. The release event runs
-  `.github/workflows/python-publish.yml` (PyPI trusted publishing), which
-  dispatches the Homebrew tap update in `denrou/homebrew-tap`; that
-  dispatch can race PyPI's index, so verify the formula moved and
-  re-dispatch `update-formula.yml` if it did not.
+  whether to cut one. A release is:
+  1. Bump `version` in `Cargo.toml` (`cargo build` so `Cargo.lock` follows),
+     commit `chore: release X.Y.Z` on `main`, and have the user push it.
+  2. Draft the notes from `git log vX.Y.Z-previous..main`: a few Markdown
+     bullets on what changed for whoever uses the tool, not the list of
+     commits (GitHub adds the compare link below them).
+  3. Create the annotated tag on that commit, the message being `vX.Y.Z`, a
+     blank line, then the notes:
+     `git tag -a vX.Y.Z --cleanup=whitespace -F <file> main`
+     (`--cleanup=whitespace` keeps a line starting with `#`, which git would
+     otherwise strip as a comment), and hand the user
+     `! git push origin vX.Y.Z`.
+  4. Watch it with `gh run watch` and the tap with
+     `gh run watch --repo denrou/homebrew-tap`.
+
+  The tag push runs `.github/workflows/release.yml` (the same pipeline as
+  `denrou/slack`): it checks the tag against the crate version and reads its
+  notes (a tag without them fails before the builds), lints and tests,
+  builds the macOS arm64 and Linux x86_64 binaries, and publishes the GitHub
+  Release with the archives (`gh-prs-vX.Y.Z-<target>.tar.gz`) and
+  `checksums.txt`. Its last job dispatches `update-formula.yml` in
+  `denrou/homebrew-tap`, which rewrites the formula from `checksums.txt`;
+  it needs the `GH_TOKEN` secret and is skipped without it, in which case
+  run `gh workflow run update-formula.yml --repo denrou/homebrew-tap -f
+formula=gh-prs -f version=X.Y.Z` by hand. The versions released on PyPI
+  (up to 0.18.1, the last Python one) stay there; nothing publishes to PyPI
+  any more.
 
 ## Architecture
 
