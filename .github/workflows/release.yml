@@ -1,0 +1,157 @@
+# Builds the binaries and publishes a GitHub Release when a v* tag is pushed,
+# then asks the Homebrew tap (denrou/homebrew-tap) to rewrite its formula.
+# Same pipeline as denrou/slack.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Only the release job writes; the others run third-party actions.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-26.04
+    outputs:
+      notes: ${{ steps.notes.outputs.notes }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check that the tag matches the crate version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "Cargo.toml version is $version but the tag is v$tag" >&2
+            exit 1
+          fi
+
+      # The notes are the tag's message past its first line, the tag name,
+      # and before a signature, if any. Read here so a tag without them
+      # fails before the builds.
+      - name: Read the release notes from the tag
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ref="$(gh api "repos/$GH_REPO/git/ref/tags/$GITHUB_REF_NAME")"
+          if [ "$(jq -r .object.type <<<"$ref")" != tag ]; then
+            echo "::error::$GITHUB_REF_NAME is not an annotated tag, so it has no notes"
+            exit 1
+          fi
+          message="$(gh api "repos/$GH_REPO/git/tags/$(jq -r .object.sha <<<"$ref")" \
+            --jq '.message | split("\n-----BEGIN ")[0]')"
+          if [ "$(head -n 1 <<<"$message")" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the message of $GITHUB_REF_NAME does not start with its name"
+            exit 1
+          fi
+          notes="$(tail -n +2 <<<"$message")"
+          if ! grep -q '[^[:space:]]' <<<"$notes"; then
+            echo "::error::the message of $GITHUB_REF_NAME holds no release notes"
+            exit 1
+          fi
+          {
+            echo "notes<<END_OF_NOTES"
+            echo "$notes"
+            echo "END_OF_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+      - run: cargo test --locked
+
+  build:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          # Deliberate: the Linux archive links the runner's glibc, so this
+          # image sets the oldest distro the binary runs on.
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package the binary with the README and the licence
+        run: |
+          name="gh-prs-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/gh-prs" README.md LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -r "dist/$name"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write the checksums
+        run: cd dist && sha256sum *.tar.gz > checksums.txt
+
+      # GitHub's generated notes add the compare link below the tag's.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NOTES: ${{ needs.check.outputs.notes }}
+        run: |
+          printf '%s\n' "$NOTES" > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --notes-file notes.md --generate-notes
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-26.04
+    # A personal token, as the workflow token cannot reach another repository.
+    # Without the secret the run says so and the command is run by hand. The
+    # version is passed rather than looked up: "latest" can lag a release
+    # created a moment ago.
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+    steps:
+      - name: Ask the tap to rewrite its formula
+        if: env.GH_TOKEN != ''
+        run: gh workflow run update-formula.yml --repo denrou/homebrew-tap -f formula=gh-prs -f "version=${GITHUB_REF_NAME#v}"
+
+      - name: Say that the tap was not told
+        if: env.GH_TOKEN == ''
+        run: |
+          echo "::warning::GH_TOKEN is not set; run by hand: gh workflow run update-formula.yml --repo denrou/homebrew-tap -f formula=gh-prs -f version=${GITHUB_REF_NAME#v}"
