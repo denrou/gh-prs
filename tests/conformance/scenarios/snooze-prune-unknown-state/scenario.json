@@ -1,0 +1,31 @@
+{
+  "args": ["snooze", "--prune", "--no-color"],
+  "files": {
+    "snooze.json": {
+      "https://github.com/acme/widgets/pull/31": {
+        "oid": "head-31",
+        "reasons": ["review"],
+        "until": null
+      },
+      "https://github.com/acme/widgets/pull/40": {
+        "oid": "head-40",
+        "reasons": ["review"],
+        "until": null
+      },
+      "https://github.com/acme/widgets/pull/41": {
+        "oid": "head-41",
+        "reasons": ["review"],
+        "until": null
+      }
+    }
+  },
+  "gh": {
+    "viewer": "me",
+    "searches": {},
+    "nodes": {
+      "X_MERGED": {"number": 31, "state": "MERGED"},
+      "X_NO_STATE": {"number": 40, "state": null},
+      "X_NEW_STATE": {"number": 41, "state": "ARCHIVED"}
+    }
+  }
+}
