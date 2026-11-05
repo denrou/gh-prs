@@ -5,7 +5,7 @@
 //! connection's nodes an `Option<Vec<Option<_>>>`, so nulls survive as
 //! unknowns, while a value of the wrong JSON type is an error. GitHub's
 //! schema is typed, so a type change means the contract with `gh` changed,
-//! and we want to hear about it (CLAUDE.md, Parsing GitHub responses). Then
+//! and we want to hear about it (ARCHITECTURE.md, Parsing GitHub responses). Then
 //! [`to_pull_request`] applies the fail-safe rules.
 //!
 //! An enum value this version doesn't know is kept (as
