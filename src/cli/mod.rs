@@ -167,11 +167,20 @@ fn prune_closed<E>(
             }
         };
         let gone = match &state {
-            Reported::Known(PrState::Open) | Reported::Missing => None,
+            Reported::Known(PrState::Open) => None,
             Reported::Known(state @ (PrState::Closed | PrState::Merged)) => {
                 Some(state.graphql_name().to_lowercase())
             }
-            Reported::Unrecognised(state) => Some(state.to_lowercase()),
+            // Deliberate: only CLOSED or MERGED is evidence the PR is gone.
+            // A state GitHub added since could still be an open one.
+            Reported::Unrecognised(state) => {
+                failures.push(format!("{url}: state {state} not recognised, kept"));
+                None
+            }
+            Reported::Missing => {
+                failures.push(format!("{url}: state unknown, kept"));
+                None
+            }
         };
         if let Some(state) = gone {
             entries.remove(&url);

@@ -1,0 +1,25 @@
+{
+  "args": ["hide", "--prune", "--no-color"],
+  "files": {
+    "hidden.json": {
+      "https://github.com/acme/widgets/pull/31": {
+        "since": "2026-01-01T00:00:00+00:00"
+      },
+      "https://github.com/acme/widgets/pull/40": {
+        "since": "2026-01-01T00:00:00+00:00"
+      },
+      "https://github.com/acme/widgets/pull/41": {
+        "since": "2026-01-01T00:00:00+00:00"
+      }
+    }
+  },
+  "gh": {
+    "viewer": "me",
+    "searches": {},
+    "nodes": {
+      "X_MERGED": {"number": 31, "state": "MERGED"},
+      "X_NO_STATE": {"number": 40, "state": null},
+      "X_NEW_STATE": {"number": 41, "state": "ARCHIVED"}
+    }
+  }
+}
