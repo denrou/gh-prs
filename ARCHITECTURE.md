@@ -23,13 +23,18 @@ knows nothing about pull requests or issues:
 - **`duration.rs`** — Pure calendar arithmetic: the `Duration` value
   (`amount` + `Unit`, hours or days) that `parse_duration()` returns, its
   `until()` deadline, and `add_days()`, the working-day step. No I/O.
+- **`table.rs`** — The borderless tables: `Cell`, `print_table()` with its
+  `Layout` (which columns give way on a narrow screen), `truncate()`,
+  `header()`.
 - **`ui.rs`** — Terminal output: styles, width, spinner, hyperlinks, the
   standard messages, and `strip_control_characters()` for text from GitHub.
 
 From here on this document is about `crates/gh-prs`, and the paths are
 relative to it: a library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
 code). A module moves to `gh-common` once a second tool uses it unchanged,
-not before: the snooze, hide and mute stores stay here until then. The Python version (0.18.1 and earlier, on PyPI) was ported module by
+not before: the snooze, hide and mute stores stay here until then, and so do
+the type model and the parsing rules below, which gh-issues follows but
+does not share as code. The Python version (0.18.1 and earlier, on PyPI) was ported module by
 module and removed once the Rust one had run in its place. The store files,
 the `--json` fields and the commands stayed identical, so nothing migrates;
 the few deliberate differences are an unrecognised review decision blocking

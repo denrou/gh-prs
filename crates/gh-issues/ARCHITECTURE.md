@@ -6,7 +6,7 @@ How gh-issues is put together and what it promises. The workspace's shape, the s
 
 One place for the open issues that are yours to look at: those in repositories you own, and those you created, are assigned or commented on, wherever they live. It only reads GitHub.
 
-It is early: today it lists them, as lines or as `--json`. The grouped view and its filters, the "needs you" reasons, and `hide`, `snooze` and `mute` are the next pull requests, and are written here as they land.
+It is early: today it shows them grouped by repository, or as `--json`, with filters. The "needs you" reasons, and `hide`, `snooze` and `mute` are the next pull requests, and are written here as they land.
 
 ## Shape
 
@@ -14,7 +14,8 @@ A library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit 
 
 - **`issue.rs`** — `Issue`, `LastComment`, and `Role`: why an issue was found (`assignee`, `author`, `commenter`, `owner`), one per search.
 - **`gh/`** — What gh-issues asks of GitHub, through `gh_common::gh`: `queries.rs` the GraphQL text (`ISSUE_FRAGMENT`), `parse.rs` the raw serde types and `to_issue()`, `fetch.rs` `fetch_issues()`.
-- **`cli/`** — `args.rs` (clap definitions), `mod.rs` (the run and the exit codes), `render.rs` (the list and `--json`).
+- **`filter.rs`** — Pure: `Filter`, what the filter flags ask for, and `keeps()`.
+- **`cli/`** — `args.rs` (clap definitions), `mod.rs` (the run and the exit codes), `render.rs` (the tables and `--json`).
 
 ## Loading (paged id searches, then batched hydration)
 
@@ -29,6 +30,25 @@ Same two layers as gh-prs (root `ARCHITECTURE.md`, Parsing GitHub responses): se
 ## Error handling
 
 "Error" must never look like "nothing to do": a failed search or lookup fails the whole run, with every failure listed, rather than showing a partial list. Errors go to stderr with exit code `1`; a usage error, from clap, exits `2`.
+
+## The view
+
+One table per repository, headed by its full name and its number of issues. Repositories come in the order of their most recently updated issue, and so do the issues within one: what moved last is on top. A row is the number (a link to the issue), the title, the labels and the date of the last update.
+
+The title is cut to 80 columns. On a screen too narrow for the table, the title shrinks to 20 columns, then the labels to an ellipsis, then the title again; the number and the date never shrink. Column spacing and where a cut falls are not part of the contract.
+
+With nothing to show, the view says `No open issues.`, or `No matching issues.` when a filter is the reason.
+
+## Filters (`filter.rs`, applied in `cli/`)
+
+Every filter given must hold:
+
+- `-c`/`--created`: you are the author.
+- `-o`/`--owned`: it lives in a repository you own.
+- `-R`/`--repo`: it lives in that repository. `owner/name` is matched whole and a bare name against the name alone, whoever the owner. Repeated, any of them.
+- `-l`/`--label`: it carries that label. Repeated, all of them, as `gh issue list` does.
+
+Repository and label names are compared without case, as GitHub does. The filters are applied after the fetch, which is the same whatever the flags: an issue's `roles` in `--json` never depend on them (narrowing the searches themselves is issue #35). They apply to `--json` too.
 
 ## `--json`
 

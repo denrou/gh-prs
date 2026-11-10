@@ -1,16 +1,19 @@
 {
   "args": [
-    "--no-color"
+    "--no-color",
+    "-c"
   ],
   "gh": {
     "searches": {
       "author": [
         "I_1",
-        "I_2"
+        "I_2",
+        "I_5"
       ],
       "user": [
         "I_2",
-        "I_3"
+        "I_3",
+        "I_4"
       ],
       "assignee": [
         "I_3"
@@ -36,23 +39,12 @@
               "name": "bug"
             }
           ]
-        },
-        "comments": {
-          "totalCount": 2,
-          "nodes": [
-            {
-              "author": {
-                "login": "maintainer"
-              },
-              "createdAt": "2099-01-01T00:00:00Z"
-            }
-          ]
         }
       },
       "I_2": {
         "number": 2,
         "title": "Add a --watch flag",
-        "updatedAt": "2099-01-03T00:00:00Z",
+        "updatedAt": "2099-01-05T00:00:00Z",
         "author": {
           "login": "me"
         },
@@ -62,7 +54,7 @@
               "name": "enhancement"
             },
             {
-              "name": "deferred"
+              "name": "Deferred"
             }
           ]
         }
@@ -77,6 +69,35 @@
               "login": "me"
             }
           ]
+        }
+      },
+      "I_4": {
+        "number": 14,
+        "title": "A much longer title, the kind that has to be cut when the screen is narrow",
+        "repository": {
+          "nameWithOwner": "me/gadgets"
+        },
+        "updatedAt": "2099-01-04T00:00:00Z",
+        "labels": {
+          "nodes": [
+            {
+              "name": "deferred"
+            },
+            {
+              "name": "bug"
+            }
+          ]
+        }
+      },
+      "I_5": {
+        "number": 5,
+        "title": "Same name, another owner",
+        "repository": {
+          "nameWithOwner": "other/widgets"
+        },
+        "updatedAt": "2099-01-03T00:00:00Z",
+        "author": {
+          "login": "me"
         }
       }
     }

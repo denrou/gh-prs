@@ -1,0 +1,21 @@
+[
+  {
+    "number": 1,
+    "repo": "other/tool",
+    "title": "Crash on start",
+    "author": "me",
+    "url": "https://github.com/other/tool/issues/1",
+    "updated_at": "2099-01-01T00:00:00Z",
+    "created_at": "2099-01-01T00:00:00Z",
+    "labels": [
+      "bug"
+    ],
+    "assignees": [],
+    "comments": 0,
+    "last_comment": null,
+    "roles": [
+      "author",
+      "commenter"
+    ]
+  }
+]
