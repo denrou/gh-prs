@@ -79,9 +79,10 @@ const SECTIONS: [(Reason, &str, Style); 3] = [
 /// The floor of the repository column on a narrow screen.
 const REPO_MIN: usize = 8;
 
-/// One section per reason: the repository, the number, the title, who is
-/// waiting (the last commenter, else the author) and the last update. On a
-/// narrow screen the title shrinks first, then the repository.
+/// One section per reason: the repository (in full: two owners can have
+/// one of the same name), the number, the title, who is waiting and the
+/// last update. On a narrow screen the title shrinks first, then the
+/// repository.
 pub fn attention(issues: &[&Issue], screen: usize) {
     let layout = Layout {
         title: 2,
@@ -95,15 +96,16 @@ pub fn attention(issues: &[&Issue], screen: usize) {
             .iter()
             .filter(|issue| issue.attention.contains(&reason))
             .map(|issue| {
-                let who = issue
+                // Who spoke last when a reply is owed, else who opened it;
+                // the author stands in for a commenter who is gone.
+                let commenter = issue
                     .last_comment
                     .as_ref()
-                    .map_or(issue.author.as_deref(), |comment| comment.author.as_deref());
+                    .and_then(|comment| comment.author.as_deref())
+                    .filter(|_| reason == Reason::Reply);
+                let who = commenter.or(issue.author.as_deref());
                 vec![
-                    cell(
-                        issue.repo.rsplit('/').next().unwrap_or(&issue.repo),
-                        fg(AnsiColor::Cyan),
-                    ),
+                    cell(issue.repo.as_str(), fg(AnsiColor::Cyan)),
                     number_cell(issue),
                     cell(issue.title.as_str(), Style::new()),
                     cell(who.unwrap_or("—"), fg(AnsiColor::Magenta)),

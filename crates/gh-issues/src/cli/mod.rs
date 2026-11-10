@@ -63,7 +63,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
             }
         };
     }
-    if cli.attention {
+    // A filter that kept nothing must not read as "all clear": the name
+    // may be mistyped.
+    let filtered_out = issues.is_empty() && !none_at_all && !filter.is_empty();
+    if filtered_out {
+        ui::out(&ui::paint("No matching issues.", ui::DIM));
+    } else if cli.attention {
         if needing.is_empty() {
             ui::out(&format!(
                 "{} Nothing needs you.",
@@ -73,12 +78,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
             render::attention(&needing, ui::width());
         }
     } else if issues.is_empty() {
-        let nothing = if none_at_all || filter.is_empty() {
-            "No open issues."
-        } else {
-            "No matching issues."
-        };
-        ui::out(&ui::paint(nothing, ui::DIM));
+        ui::out(&ui::paint("No open issues.", ui::DIM));
     } else {
         // What needs you first, then the whole backlog, those included.
         if !needing.is_empty() {

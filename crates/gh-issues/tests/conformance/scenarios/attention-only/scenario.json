@@ -1,7 +1,7 @@
 {
   "args": [
     "--no-color",
-    "-a"
+    "--attention"
   ],
   "gh": {
     "searches": {

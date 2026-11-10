@@ -9,42 +9,53 @@ use std::collections::BTreeSet;
 use crate::issue::{Issue, Reason, Role};
 
 /// Why `issue` needs `viewer` (the authenticated login), if it does.
+/// At most one reason today: they exclude each other.
 #[must_use]
 pub fn attention_reasons(issue: &Issue, viewer: &str) -> BTreeSet<Reason> {
-    let is_viewer =
-        |login: Option<&String>| login.is_some_and(|login| login.eq_ignore_ascii_case(viewer));
+    let is_viewer = |login: &String| login.eq_ignore_ascii_case(viewer);
     let has = |role| issue.roles.contains(&role);
-    let authored = is_viewer(issue.author.as_ref());
+    // Read from the issue as well as from the searches: past the 1000
+    // matches GitHub serves, a search no longer grants its role.
+    let authored = has(Role::Author) || issue.author.as_ref().is_some_and(is_viewer);
+    let assigned = has(Role::Assignee) || issue.assignees.iter().any(is_viewer);
     // The viewer has a say in the thread: they opened it, spoke in it, or
     // it was handed to them.
-    let engaged = authored || has(Role::Author) || has(Role::Commenter) || has(Role::Assignee);
+    let engaged = authored || assigned || has(Role::Commenter);
 
-    let mut reasons = BTreeSet::new();
     // Someone else spoke last. A commenter whose account is gone is still
     // someone else.
     let answered_by_someone_else = issue
         .last_comment
         .as_ref()
-        .is_some_and(|comment| !is_viewer(comment.author.as_ref()));
-    if engaged && answered_by_someone_else {
-        reasons.insert(Reason::Reply);
-    }
-    // Opened by someone else in a repository of the viewer's, who has not
-    // touched it yet: not a word, not an assignment.
-    if has(Role::Owner) && !engaged {
-        reasons.insert(Reason::Triage);
-    }
-    // Standing work, shown when nothing more pressing says so already.
-    if has(Role::Assignee) && reasons.is_empty() {
-        reasons.insert(Reason::Assigned);
-    }
-    reasons
+        .is_some_and(|comment| !comment.author.as_ref().is_some_and(is_viewer));
+    let reason = if engaged && answered_by_someone_else {
+        Some(Reason::Reply)
+    } else if has(Role::Owner) && !engaged && issue.assignees.is_empty() {
+        // Opened by someone else in a repository of the viewer's, and
+        // nobody has taken it: the viewer has not said a word, and it is
+        // assigned to no one. A label is no sign of triage: an issue
+        // template sets one on its own.
+        Some(Reason::Triage)
+    } else if assigned && !authored {
+        // Someone else's issue handed to the viewer: standing work, even
+        // after the viewer's last word. One the viewer opened and took is
+        // their own backlog.
+        Some(Reason::Assigned)
+    } else {
+        None
+    };
+    reason.into_iter().collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::issue::LastComment;
+
+    fn assigned_to(mut issue: Issue, logins: &[&str]) -> Issue {
+        issue.assignees = logins.iter().map(|login| (*login).to_owned()).collect();
+        issue
+    }
 
     fn issue(author: Option<&str>, roles: &[Role], last_commenter: Option<Option<&str>>) -> Issue {
         Issue {
@@ -139,6 +150,44 @@ mod tests {
         // Taking it in my own repository is the triage.
         let taken = issue(Some("octocat"), &[Role::Owner, Role::Assignee], None);
         assert_eq!(reasons(&taken), ["assigned"]);
+    }
+
+    #[test]
+    fn an_assigned_issue_stays_standing_work_after_my_last_word() {
+        let working = issue(
+            Some("lead"),
+            &[Role::Assignee, Role::Commenter],
+            Some(Some("me")),
+        );
+        assert_eq!(reasons(&working), ["assigned"]);
+    }
+
+    #[test]
+    fn an_issue_i_opened_and_took_is_my_own_backlog() {
+        let mine = issue(
+            Some("me"),
+            &[Role::Author, Role::Owner, Role::Assignee],
+            None,
+        );
+        assert!(reasons(&mine).is_empty());
+        let spoken = issue(
+            Some("me"),
+            &[Role::Author, Role::Assignee],
+            Some(Some("me")),
+        );
+        assert!(reasons(&spoken).is_empty());
+    }
+
+    #[test]
+    fn an_issue_taken_by_someone_is_triaged() {
+        let delegated = assigned_to(issue(Some("octocat"), &[Role::Owner], None), &["teammate"]);
+        assert!(reasons(&delegated).is_empty());
+    }
+
+    #[test]
+    fn the_assignee_search_missing_does_not_hide_my_assignment() {
+        let mine = assigned_to(issue(Some("octocat"), &[Role::Owner], None), &["Me"]);
+        assert_eq!(reasons(&mine), ["assigned"]);
     }
 
     #[test]

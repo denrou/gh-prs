@@ -32,7 +32,8 @@ pub struct Cli {
     pub label: Vec<String>,
 
     /// only the issues that need you: a reply, a triage, or assigned to you
-    #[arg(short = 'a', long = "attention")]
+    // Deliberate: no `-a`, which widens to everything in `gh prs`.
+    #[arg(long = "attention")]
     pub attention: bool,
 
     /// print only the number of issues that need you (for status bars)

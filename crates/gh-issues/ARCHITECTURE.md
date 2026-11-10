@@ -37,12 +37,12 @@ Same two layers as gh-prs (root `ARCHITECTURE.md`, Parsing GitHub responses): se
 The question is whose move it is. An issue needs you when any of these hold:
 
 - **reply** — someone else spoke last in a thread you have a say in: you opened it, commented in it, or it is assigned to you. Your own last word calls for nothing: the ball is with them.
-- **triage** — it lives in a repository you own, someone else opened it, and you have not touched it: not a comment, not an assignment to yourself. Their own follow-up comments do not make it a **reply**, since you never spoke; answering it is the triage, after which it is a thread you have a say in.
-- **assigned** — it is assigned to you and neither of the above fired: standing work, listed once.
+- **triage** — it lives in a repository you own, someone else opened it, and nobody has taken it: you have not commented, and it is assigned to no one. A label is no sign of triage, since an issue template sets one on its own. Their own follow-up comments do not make it a **reply**, since you never spoke; answering it is the triage, after which it is a thread you have a say in.
+- **assigned** — someone else's issue is assigned to you and no reply is owed: standing work, which stays listed after your own last word. An issue you opened and took yourself is your own backlog and needs nothing.
 
 Your own backlog (issues you opened in your repositories, with nobody answering) needs nothing, which is most of it.
 
-Unknowns read as someone else's word, yours to answer: a last commenter or an author whose account is gone is not you. An issue wrongly shown costs a glance; one wrongly withheld is a person left without an answer. Authorship is read from the issue's author as well as from the `author` search, so an issue of yours beyond the 1000 matches that search serves is still yours. Logins are compared without case.
+Unknowns read as someone else's word, yours to answer: a last commenter or an author whose account is gone is not you. An issue wrongly shown costs a glance; one wrongly withheld is a person left without an answer. Authorship and assignment are read from the issue itself as well as from the searches, so an issue of yours beyond the 1000 matches a search serves is still yours; commenting can only be known from the `commenter` search. The reasons exclude each other today, so an issue has at most one; `attention` stays a set, as in gh-prs, for the reasons to come. Logins are compared without case.
 
 The viewer's login comes with the searches. Without it nobody's turn can be told, so the fetch fails rather than guess.
 
@@ -50,15 +50,15 @@ Not covered: an issue that only mentions you (there is no search for it yet), an
 
 ## The view
 
-By default, the "needs you" sections come first, when there are any: `Waiting for your reply`, `New in your repositories`, `Assigned to you`, each a table of repository (its bare name), number, title, who is waiting (the last commenter, else the author, `—` when gone) and the date of the last update. Then the whole backlog, those issues included.
+By default, the "needs you" sections come first, when there are any: `Waiting for your reply`, `New in your repositories`, `Assigned to you`, each a table of repository (in full, since two owners can have one of the same name), number, title, who is waiting (who spoke last when a reply is owed, else who opened it; `—` when unknown) and the date of the last update. Then the whole backlog, those issues included.
 
-`-a`/`--attention` shows the sections alone, and `✓ Nothing needs you.` when there are none. `--count` prints only the number of issues that need you, unstyled, for a status bar; on a failure it prints no number and exits `1`, so an error never reads as zero. `--count` with `--json` is a usage error.
+`--attention` shows the sections alone, and `✓ Nothing needs you.` when there are none. It has no `-a`, which widens to everything in `gh prs`. `--count` prints only the number of issues that need you, unstyled, for a status bar; on a failure it prints no number and exits `1`, so an error never reads as zero. `--count` with `--json` is a usage error.
 
 The backlog is one table per repository, headed by its full name and its number of issues. Repositories come in the order of their most recently updated issue, and so do the issues within one: what moved last is on top. A row is the number (a link to the issue), the title, the labels and the date of the last update (`—` when GitHub didn't send it). A table where no issue carries a label has no labels column.
 
 The title is cut to 80 columns. On a screen too narrow for the table, the title shrinks to 20 columns, then the labels to an ellipsis, then the title again; the number and the date never shrink. Column spacing and where a cut falls are not part of the contract.
 
-With nothing to show, the view says `No open issues.`, or `No matching issues.` when there are issues and the filters kept none.
+With nothing to show, the view says `No open issues.`, or `No matching issues.` when there are issues and the filters kept none, `--attention` included: a mistyped filter must not read as all clear. `--count` still prints `0` there, since a status bar wants a number.
 
 ## Filters (`filter.rs`, applied in `cli/`)
 
