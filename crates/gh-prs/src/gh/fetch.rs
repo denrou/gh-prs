@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use super::parse::{RawPr, Unrecognised, to_pull_request};
 use super::queries::{COUNT_QUERY, SEARCH_QUERY, hydrate_query, pr_query};
-use super::{GhError, Runner, Task, flags, gather, graphql};
+use super::{GhError, Runner, SearchResult, Task, flags, gather, graphql, nodes_by_id, search_ids};
 use crate::attention::{Staleness, attention_reasons};
 use crate::merge::MergeMode;
 use crate::pr::{Oid, PrState, PullRequest, Reason, Reported, Role};
@@ -64,66 +64,15 @@ pub fn count_prs(runner: &dyn Runner, qualifier: Role) -> Result<u64, GhError> {
     }
 }
 
-#[derive(Debug)]
-struct SearchResult {
-    viewer: String,
-    ids: Vec<String>,
-    issue_count: u64,
-}
-
 fn search(runner: &dyn Runner, qualifier: Role) -> Result<SearchResult, GhError> {
-    let context = format!("Search '{}'", qualifier.as_str());
-    let data = graphql(
+    search_ids(
         runner,
-        &context,
-        &flags(&[
-            ("-f", format!("query={SEARCH_QUERY}")),
-            ("-f", format!("q={}", search_string(qualifier))),
-            ("-F", format!("limit={SEARCH_LIMIT}")),
-        ]),
-    )?;
-    let results = data
-        .get("results")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            GhError(format!(
-                "{context}: response has no results block (unexpected shape)"
-            ))
-        })?;
-    let no_id = || {
-        GhError(format!(
-            "{context}: result without a node id (unexpected shape)"
-        ))
-    };
-    let nodes = match results.get("nodes") {
-        None => &[][..],
-        Some(nodes) if nodes.is_null() => &[][..],
-        Some(nodes) => nodes.as_array().ok_or_else(no_id)?.as_slice(),
-    };
-    let mut ids = Vec::new();
-    for node in nodes {
-        // GitHub returns null (or an empty object) for an inaccessible match.
-        if node.is_null() || node.as_object().is_some_and(serde_json::Map::is_empty) {
-            continue;
-        }
-        let id = node
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(no_id)?;
-        ids.push(id.to_owned());
-    }
-    Ok(SearchResult {
-        viewer: data["viewer"]["login"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned(),
-        ids,
-        issue_count: results
-            .get("issueCount")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-    })
+        &format!("Search '{}'", qualifier.as_str()),
+        SEARCH_QUERY,
+        &search_string(qualifier),
+        SEARCH_LIMIT,
+        None,
+    )
 }
 
 /// Look PR nodes up by id; a null entry is a PR that vanished meanwhile.
@@ -133,20 +82,13 @@ fn hydrate(
     ids: &[String],
     with_threads: bool,
 ) -> Result<Vec<Value>, GhError> {
-    let mut args = flags(&[
-        ("-f", format!("query={}", hydrate_query())),
-        ("-F", format!("withThreads={with_threads}")),
-    ]);
-    for id in ids {
-        args.extend(["-f".to_owned(), format!("ids[]={id}")]);
-    }
-    let mut data = graphql(runner, context, &args)?;
-    match data.remove("nodes") {
-        Some(Value::Array(nodes)) => Ok(nodes),
-        Some(_) | None => Err(GhError(format!(
-            "{context}: response has no nodes block (unexpected shape)"
-        ))),
-    }
+    nodes_by_id(
+        runner,
+        context,
+        &hydrate_query(),
+        &flags(&[("-F", format!("withThreads={with_threads}"))]),
+        ids,
+    )
 }
 
 /// Open PRs the viewer is involved with through `qualifiers`, enriched and

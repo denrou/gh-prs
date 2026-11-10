@@ -41,6 +41,16 @@ pub fn disable_color() {
     anstream::ColorChoice::Never.write_global();
 }
 
+/// Text from GitHub (a title, a label) is attacker-controlled. C0 controls,
+/// DEL and C1 controls go: ESC and a one-character CSI (U+009B) could
+/// otherwise inject terminal escape sequences.
+#[must_use]
+pub fn strip_control_characters(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(c, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}'))
+        .collect()
+}
+
 pub fn out(line: &str) {
     anstream::println!("{line}");
 }

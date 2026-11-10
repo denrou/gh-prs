@@ -14,6 +14,7 @@
 
 use std::collections::BTreeSet;
 
+use gh_common::ui::strip_control_characters;
 use serde::Deserialize;
 
 use super::fetch::{LABEL_PAGE_LIMIT, REVIEW_PAGE_LIMIT};
@@ -330,16 +331,6 @@ fn reported<T: GraphqlEnum>(
 
 fn oid(commit: Option<&CommitRef>) -> Option<Oid> {
     commit.and_then(|c| c.oid.as_deref()).and_then(Oid::new)
-}
-
-/// PR titles are attacker-controlled. C0 controls, DEL and C1 controls go:
-/// ESC and a one-character CSI (U+009B) could otherwise inject terminal
-/// escape sequences.
-fn strip_control_characters(title: &str) -> String {
-    title
-        .chars()
-        .filter(|c| !matches!(c, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}'))
-        .collect()
 }
 
 #[cfg(test)]
