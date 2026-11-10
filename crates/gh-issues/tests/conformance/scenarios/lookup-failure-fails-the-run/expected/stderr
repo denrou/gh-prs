@@ -1,0 +1,2 @@
+Error: Some issue lookups failed; results would be incomplete:
+  Issue lookup 1/1 failed: HTTP 502: Bad Gateway

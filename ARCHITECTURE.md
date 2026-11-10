@@ -4,13 +4,17 @@ How gh-prs is put together and what it promises, for a first read of the code. R
 
 ## Shape
 
-A Cargo workspace of two crates. `crates/gh-common` is the plumbing a
-second tool would need as is, and knows nothing about pull requests:
+A Cargo workspace: two tools, `crates/gh-prs` (this document) and
+`crates/gh-issues` (its own `ARCHITECTURE.md`, next to its code), and what
+they share, `crates/gh-common` and `crates/gh-conformance` (the conformance
+harness, see Testing). `gh-common` is the plumbing both tools use as is, and
+knows nothing about pull requests or issues:
 
 - **`gh.rs`** — Running `gh`: the `Runner` trait (run `gh` with these
   arguments, return status, stdout, stderr), the real `GhCli` runner with
   its 60 s timeout, `GhError`, `graphql()` (the validated envelope),
-  `gather()` (the bounded parallel fan-out) and `flags()`.
+  `gather()` (the bounded parallel fan-out), `search_ids()` (one page of a
+  search, as node ids), `nodes_by_id()` (the batched lookup) and `flags()`.
 - **`store.rs`** — JSON file I/O shared by the machine-managed stores:
   `store_path()` (per tool), `read_json()` (missing file → `None`, every
   other failure an error for the caller to wrap), `write_json()`
@@ -20,10 +24,10 @@ second tool would need as is, and knows nothing about pull requests:
   (`amount` + `Unit`, hours or days) that `parse_duration()` returns, its
   `until()` deadline, and `add_days()`, the working-day step. No I/O.
 - **`ui.rs`** — Terminal output: styles, width, spinner, hyperlinks, the
-  standard messages.
+  standard messages, and `strip_control_characters()` for text from GitHub.
 
-`crates/gh-prs` is the tool, and the paths below are relative to it: a
-library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
+From here on this document is about `crates/gh-prs`, and the paths are
+relative to it: a library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
 code). A module moves to `gh-common` once a second tool uses it unchanged,
 not before: the snooze, hide and mute stores stay here until then. The Python version (0.18.1 and earlier, on PyPI) was ported module by
 module and removed once the Rust one had run in its place. The store files,
@@ -146,7 +150,11 @@ run on assumptions that no longer hold.
 ## Testing
 
 Unit tests live next to the code (`#[cfg(test)]`). The conformance suite
-(`tests/conformance/`) is black-box: each scenario directory holds a
+(`tests/conformance/`) is black-box, and its harness is shared:
+`crates/gh-conformance` runs a tool's scenarios and is the fake `gh` (the
+runner, the search answers, the injected failures), while each tool's
+`tests/conformance/fake_gh.rs` holds what only it asks of GitHub. Each
+scenario directory holds a
 `scenario.json` (argv, environment, viewer login, search results per
 qualifier, GraphQL nodes by id, PR lookups and `pr view` answers, injected
 failures, initial stores) and an `expected/` (exit code, stdout, stderr,
