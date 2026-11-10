@@ -29,6 +29,7 @@ pub(super) const LABEL_PAGE_LIMIT: usize = 20;
 /// PRs hydrated per request: 2-5s, half GitHub's 10s budget with room for
 /// the slowdown it applies to concurrent requests.
 const HYDRATE_BATCH: usize = 15;
+
 fn search_string(qualifier: Role) -> String {
     format!(
         "is:pr is:open archived:false sort:updated-desc {}:@me",
@@ -523,8 +524,9 @@ mod tests {
     use jiff::tz::TimeZone;
     use serde_json::json;
 
+    use gh_common::duration::Duration;
+
     use super::*;
-    use crate::duration::Duration;
     use crate::gh::Output;
     use crate::gh::queries::PR_FRAGMENT;
     use crate::pr::{Mergeable, ReviewState};

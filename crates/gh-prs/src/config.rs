@@ -20,10 +20,10 @@
 
 use std::path::{Path, PathBuf};
 
+use gh_common::duration::{CALENDAR_WEEK_DAYS, Duration, parse_duration};
 use serde_json::{Map, Value};
 
 use crate::attention::DEFAULT_STALE_AFTER;
-use crate::duration::{CALENDAR_WEEK_DAYS, Duration, parse_duration};
 use crate::mute::MuteRule;
 use crate::store::{read_json, store_path};
 

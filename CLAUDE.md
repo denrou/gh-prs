@@ -36,6 +36,6 @@ Written down because none of them can be read from the code.
 - **Blocking I/O, no async runtime.** At most about 20 requests per run, eight in parallel through `std::thread::scope`.
 - **Releases mirror `denrou/slack` (2026-11-05).** One release workflow shape and one tap for both Rust tools; cargo-dist and the Intel macOS and Linux arm64 targets were left out, since nobody runs them.
 - **Public repo, MIT**, like slack.
-- **A Cargo workspace (2026-11-10).** `gh issues`, the same idea for issues, needs the same plumbing (the `gh` runner, the stores, durations, the table and the conformance harness), and a second repository would have copied about ten modules and let them drift. So the tools are crates of one workspace, with one version and one release. Grouping every `gh` alias in one repository was set aside: `gh-notifications` is Python and shares no code.
+- **A Cargo workspace (2026-11-10).** `gh issues`, the same idea for issues, needs the same plumbing (the `gh` runner, the stores, durations, the table and the conformance harness), and a second repository would have copied about ten modules and let them drift. So the tools are crates of one workspace, with one version and one release. A module moves to `gh-common` once the second tool uses it unchanged, not before (ARCHITECTURE.md, Shape). Grouping every `gh` alias in one repository was set aside: `gh-notifications` is Python and shares no code.
 
 A decision taken but not built yet lives in its issue, with the design: the stale nudge ignoring merges of the base branch (2026-10-27) is #21.

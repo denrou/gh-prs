@@ -360,6 +360,72 @@ mod tests {
         }
     }
 
+    fn task<'a, T: Send + 'a>(
+        label: &str,
+        work: impl FnOnce() -> Result<T, GhError> + Send + 'a,
+    ) -> (String, Task<'a, T>) {
+        (label.to_owned(), Box::new(work))
+    }
+
+    #[test]
+    fn gather_returns_results_in_submission_order() {
+        // More tasks than workers, the first ones the slowest to finish.
+        let tasks = (0..MAX_PARALLEL * 3)
+            .map(|n| {
+                task(&format!("call {n}"), move || {
+                    thread::sleep(Duration::from_millis(if n < 4 { 20 } else { 0 }));
+                    Ok(n)
+                })
+            })
+            .collect();
+        let expected: Vec<usize> = (0..MAX_PARALLEL * 3).collect();
+        assert_eq!(gather(tasks, "calls"), Ok(expected));
+    }
+
+    #[test]
+    fn gather_of_nothing_is_empty() {
+        assert_eq!(
+            gather(Vec::<(String, Task<'_, u8>)>::new(), "calls"),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn gather_lists_every_failure_sorted() {
+        let tasks = vec![
+            task("call 1", || Err(GhError("zeta failed".to_owned()))),
+            task("call 2", || Ok(2)),
+            task("call 3", || Err(GhError("alpha failed".to_owned()))),
+        ];
+        assert_eq!(
+            gather(tasks, "calls"),
+            Err(GhError(
+                "Some calls failed; results would be incomplete:\n  alpha failed\n  zeta failed"
+                    .to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn gather_reports_a_crashed_task_by_its_label() {
+        let tasks = vec![task("call 1", || Ok(1)), task("call 2", || panic!("boom"))];
+        assert_eq!(
+            gather(tasks, "calls"),
+            Err(GhError(
+                "Some calls failed; results would be incomplete:\n  call 2 crashed: boom"
+                    .to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn flags_pair_each_flag_with_its_value() {
+        assert_eq!(
+            flags(&[("-f", "q=x".to_owned()), ("-F", "limit=1".to_owned())]),
+            ["-f", "q=x", "-F", "limit=1"]
+        );
+    }
+
     #[test]
     fn args_go_after_api_graphql() {
         let seen = std::sync::Mutex::new(Vec::new());

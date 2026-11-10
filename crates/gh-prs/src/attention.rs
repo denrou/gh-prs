@@ -8,11 +8,11 @@
 
 use std::collections::BTreeSet;
 
+use gh_common::duration::{Duration, Unit};
 use jiff::civil::{Date, DateTime, date};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 
-use crate::duration::{Duration, Unit};
 use crate::pr::{
     Checks, Mergeable, PullRequest, Reason, Reported, ReviewDecision, ReviewState, Role,
 };
