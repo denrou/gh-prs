@@ -249,6 +249,7 @@ dependencies = [
  "tempfile",
  "terminal_size",
  "thiserror",
+ "unicode-width",
  "wait-timeout",
 ]
 
@@ -267,6 +268,7 @@ dependencies = [
 name = "gh-issues"
 version = "0.19.0"
 dependencies = [
+ "anstyle",
  "clap",
  "gh-common",
  "gh-conformance",
@@ -287,7 +289,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
- "unicode-width",
 ]
 
 [[package]]

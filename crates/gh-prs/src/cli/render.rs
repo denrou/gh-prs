@@ -1,11 +1,14 @@
 //! The tables and `--json`.
 
 use anstyle::{AnsiColor, Style};
-use gh_common::ui::{BOLD, DIM, bold, fg, link, out, paint};
+use gh_common::table::{Cell, Layout, TITLE_MIN, cell, header, print_table};
+use gh_common::ui::{BOLD, DIM, bold, fg, out, paint};
 use serde::Serialize;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::pr::{Checks, PullRequest, Reason, Reported, ReviewDecision};
+
+/// The floor of the repository column on a narrow screen.
+const REPO_MIN: usize = 8;
 
 /// The attention view's sections, in display order.
 const SECTIONS: [(Reason, &str, Style); 8] = [
@@ -39,85 +42,16 @@ const SECTIONS: [(Reason, &str, Style); 8] = [
     ),
 ];
 
-/// One table cell: plain text (measured for the layout), its style, and an
-/// optional hyperlink.
-struct Cell {
-    text: String,
-    style: Style,
-    url: String,
-}
-
-fn cell(text: impl Into<String>, style: Style) -> Cell {
-    Cell {
-        text: text.into(),
-        style,
-        url: String::new(),
+/// The title is cut to `title_cap`; on a narrow screen it shrinks to
+/// [`TITLE_MIN`], then the repository to [`REPO_MIN`], then the title again.
+/// The number, author and date never shrink (the number is the link).
+const fn layout(title_cap: usize) -> Layout {
+    Layout {
+        title: 2,
+        title_cap,
+        title_min: TITLE_MIN,
+        gives_way: Some((0, REPO_MIN)),
     }
-}
-
-/// Below this the title stops being readable, so the repository gives way
-/// first; the number, author and date never shrink (the number is the link).
-const TITLE_MIN: usize = 20;
-const REPO_MIN: usize = 8;
-const REPO_COLUMN: usize = 0;
-
-/// A borderless, headerless table with two spaces between columns. The
-/// title is cut to `title_cap`; on a narrow screen it shrinks to
-/// [`TITLE_MIN`], then the repository to [`REPO_MIN`], then the title again,
-/// each cut ending in an ellipsis.
-fn print_table(rows: &[Vec<Cell>], title_column: usize, title_cap: usize, screen: usize) {
-    let Some(first) = rows.first() else { return };
-    let mut widths: Vec<usize> = (0..first.len())
-        .map(|column| {
-            rows.iter()
-                .map(|row| row[column].text.width())
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    widths[title_column] = widths[title_column].min(title_cap);
-    let total = widths.iter().sum::<usize>() + 2 * (widths.len() - 1);
-    let mut excess = total.saturating_sub(screen);
-    for (column, floor) in [
-        (title_column, TITLE_MIN),
-        (REPO_COLUMN, REPO_MIN),
-        (title_column, 1),
-    ] {
-        let give = excess.min(widths[column].saturating_sub(floor));
-        widths[column] -= give;
-        excess -= give;
-    }
-    for row in rows {
-        let mut line = String::new();
-        for (column, cell) in row.iter().enumerate() {
-            let text = truncate(&cell.text, widths[column]);
-            let padding = widths[column] - text.width();
-            line.push_str(&paint(&link(&text, &cell.url), cell.style));
-            if column + 1 < row.len() {
-                line.push_str(&" ".repeat(padding + 2));
-            }
-        }
-        out(&line);
-    }
-}
-
-/// `text` cut to `width` columns, the last one an ellipsis when cut.
-fn truncate(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_owned();
-    }
-    let mut cut = String::new();
-    let mut used = 0;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w + 1 > width {
-            break;
-        }
-        cut.push(c);
-        used += w;
-    }
-    cut.push('…');
-    cut
 }
 
 fn repo_short(pr: &PullRequest) -> &str {
@@ -176,14 +110,6 @@ fn checks_cell(pr: &PullRequest) -> Cell {
     }
 }
 
-fn header(title: &str, style: Style, count: usize) {
-    out(&format!(
-        "{} {}",
-        paint(title, style),
-        paint(&format!("({count})"), DIM)
-    ));
-}
-
 /// The default view: one section per reason, a PR in every section it
 /// qualifies for.
 pub fn attention(prs: &[PullRequest], screen: usize) {
@@ -220,7 +146,7 @@ pub fn attention(prs: &[PullRequest], screen: usize) {
             })
             .collect();
         header(title, style, group.len());
-        print_table(&rows, 2, 70, screen);
+        print_table(&rows, &layout(70), screen);
         out("");
     }
 }
@@ -247,7 +173,7 @@ pub fn list(prs: &[PullRequest], title: &str, style: Style, screen: usize) {
         })
         .collect();
     header(title, style, prs.len());
-    print_table(&rows, 2, 60, screen);
+    print_table(&rows, &layout(60), screen);
 }
 
 /// One PR in `--json`, a scripting interface: field names and order are
@@ -328,19 +254,4 @@ pub fn json(prs: &[PullRequest]) -> String {
         .collect();
     // Serializing plain strings and numbers can't fail.
     serde_json::to_string_pretty(&rows).unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncation_keeps_the_width_with_an_ellipsis() {
-        assert_eq!(truncate("Fix the parser", 20), "Fix the parser");
-        assert_eq!(truncate("Fix the parser", 14), "Fix the parser");
-        assert_eq!(truncate("Fix the parser", 8), "Fix the…");
-        assert_eq!(truncate("Fix the parser", 1), "…");
-        // Wide characters count double.
-        assert_eq!(truncate("日本語のタイトル", 7), "日本語…");
-    }
 }

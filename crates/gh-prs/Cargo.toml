@@ -21,7 +21,6 @@ jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-unicode-width.workspace = true
 
 [dev-dependencies]
 gh-conformance.workspace = true

@@ -1,6 +1,8 @@
-//! The list and `--json`.
+//! The tables and `--json`.
 
-use gh_common::ui::{DIM, link, out, paint};
+use anstyle::{AnsiColor, Style};
+use gh_common::table::{Cell, Layout, TITLE_MIN, cell, header, print_table};
+use gh_common::ui::{BOLD, DIM, bold, fg, out};
 use serde::Serialize;
 
 use crate::issue::Issue;
@@ -30,7 +32,7 @@ struct LastComment<'a> {
     created_at: &'a str,
 }
 
-pub fn json(issues: &[Issue]) -> String {
+pub fn json(issues: &[&Issue]) -> String {
     let rows: Vec<Row<'_>> = issues
         .iter()
         .map(|issue| Row {
@@ -54,17 +56,46 @@ pub fn json(issues: &[Issue]) -> String {
     serde_json::to_string_pretty(&rows).unwrap_or_default()
 }
 
-/// One line per issue, most recently updated first.
-pub fn list(issues: &[Issue]) {
-    if issues.is_empty() {
-        out(&paint("No open issues.", DIM));
-        return;
-    }
+/// The title is cut to 80 columns; on a narrow screen it shrinks to
+/// [`TITLE_MIN`], then the labels to an ellipsis, then the title again. The
+/// number (the link) and the date never shrink.
+const LAYOUT: Layout = Layout {
+    title: 1,
+    title_cap: 80,
+    title_min: TITLE_MIN,
+    gives_way: Some((2, 1)),
+};
+
+/// One table per repository, in the order of their most recently updated
+/// issue; within one, most recently updated first.
+pub fn by_repository(issues: &[&Issue], screen: usize) {
+    let mut repos: Vec<&str> = Vec::new();
     for issue in issues {
-        out(&format!(
-            "{}  {}",
-            link(&issue.id(), &issue.url),
-            issue.title
-        ));
+        if !repos.contains(&issue.repo.as_str()) {
+            repos.push(&issue.repo);
+        }
+    }
+    for (index, repo) in repos.iter().enumerate() {
+        let rows: Vec<Vec<Cell>> = issues
+            .iter()
+            .filter(|issue| issue.repo == *repo)
+            .map(|issue| {
+                vec![
+                    Cell {
+                        text: format!("#{}", issue.number),
+                        style: BOLD,
+                        url: issue.url.clone(),
+                    },
+                    cell(issue.title.as_str(), Style::new()),
+                    cell(issue.labels.join(", "), fg(AnsiColor::Yellow)),
+                    cell(issue.updated_at.split('T').next().unwrap_or_default(), DIM),
+                ]
+            })
+            .collect();
+        if index > 0 {
+            out("");
+        }
+        header(repo, bold(AnsiColor::Cyan), rows.len());
+        print_table(&rows, &LAYOUT, screen);
     }
 }
