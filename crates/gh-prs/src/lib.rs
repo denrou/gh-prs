@@ -12,5 +12,3 @@ pub mod mute;
 pub mod pr;
 pub mod snooze;
 pub mod store;
-
-pub use gh_common::duration;

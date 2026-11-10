@@ -1,10 +1,10 @@
 //! The tables and `--json`.
 
 use anstyle::{AnsiColor, Style};
+use gh_common::ui::{BOLD, DIM, bold, fg, link, out, paint};
 use serde::Serialize;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::ui::{BOLD, DIM, bold, fg, link, out, paint};
 use crate::pr::{Checks, PullRequest, Reason, Reported, ReviewDecision};
 
 /// The attention view's sections, in display order.

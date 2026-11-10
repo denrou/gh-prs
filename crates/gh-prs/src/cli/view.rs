@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use anstyle::{AnsiColor, Style};
+use gh_common::duration::parse_duration;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
@@ -10,7 +11,6 @@ use super::args::Cli;
 use super::{FAILURE, render, settings, ui};
 use crate::attention::Staleness;
 use crate::config::week_days;
-use crate::duration::parse_duration;
 use crate::gh::{Runner, count_prs, fetch_prs};
 use crate::hide::{hide_path, load_hidden, split_hidden};
 use crate::mute::split_muted;

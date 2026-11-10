@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::process::ExitCode;
 
+use gh_common::duration::{Unit, parse_duration};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
@@ -17,7 +18,6 @@ use super::{
 };
 use crate::attention::Staleness;
 use crate::config::{Config, week_days};
-use crate::duration::{Unit, parse_duration};
 use crate::gh::{Runner, fetch_prs};
 use crate::pr::Oid;
 use crate::snooze::{Snooze, Snoozes, load_snoozes, save_snoozes, snooze_path};
