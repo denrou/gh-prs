@@ -22,7 +22,7 @@
 //!
 //! gh-issues only reads, so there is no write call to log.
 
-use gh_conformance::fake::{Fields, Reply};
+use gh_conformance::fake::{Fields, Reply, lookup};
 use serde_json::{Value, json};
 
 const DEFAULT_REPO: &str = "acme/widgets";
@@ -52,10 +52,7 @@ pub fn answer(args: &[&str], gh: &Value) -> (String, Reply) {
                     .map_or(Value::Null, |partial| complete_node(id, partial))
             })
             .collect();
-        return (
-            "hydrate".to_owned(),
-            Reply::ok(json!({ "data": { "nodes": nodes } })),
-        );
+        return ("hydrate".to_owned(), lookup(nodes));
     }
     fields.search(gh).unwrap_or_else(unsupported)
 }

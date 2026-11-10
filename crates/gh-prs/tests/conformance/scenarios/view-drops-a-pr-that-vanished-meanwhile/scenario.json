@@ -1,0 +1,22 @@
+{
+  "args": [
+    "-c",
+    "--no-color"
+  ],
+  "gh": {
+    "searches": {
+      "author": [
+        "PR_1",
+        "PR_2"
+      ]
+    },
+    "nodes": {
+      "PR_1": {
+        "number": 1,
+        "author": {
+          "login": "me"
+        }
+      }
+    }
+  }
+}

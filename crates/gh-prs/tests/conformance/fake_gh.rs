@@ -34,7 +34,7 @@
 //! Write calls (`pr review`, `pr merge`) are appended to the log the harness
 //! compares, whatever they answer.
 
-use gh_conformance::fake::{Fields, Reply, viewer};
+use gh_conformance::fake::{Fields, Reply, lookup, viewer};
 use serde_json::{Map, Value, json};
 
 const DEFAULT_REPO: &str = "acme/widgets";
@@ -70,10 +70,7 @@ fn graphql(rest: &[&str], gh: &Value) -> (String, Reply) {
             .iter()
             .map(|id| node_by_id(gh, id, with_threads))
             .collect();
-        return (
-            "hydrate".to_owned(),
-            Reply::ok(json!({ "data": { "nodes": nodes } })),
-        );
+        return ("hydrate".to_owned(), lookup(nodes));
     }
     if let Some(url) = fields.get("url") {
         let resource = node_by_url(gh, url).map(|mut node| {

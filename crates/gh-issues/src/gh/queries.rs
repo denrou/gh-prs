@@ -2,8 +2,9 @@
 //! `-f`/`-F` flags), so no untrusted or dynamic text is ever spliced into a
 //! query.
 
-/// Every field a hydrated issue carries. `labels(first:)` must stay equal
-/// to `LABEL_PAGE_LIMIT` in `fetch`, which a test pins.
+/// Every field a hydrated issue carries. Labels are read up to GitHub's
+/// page maximum, so that the list is whole in practice; GitHub itself caps
+/// assignees at 10.
 pub const ISSUE_FRAGMENT: &str = "
 fragment issueFields on Issue {
   number
@@ -14,7 +15,7 @@ fragment issueFields on Issue {
   createdAt
   repository { nameWithOwner }
   author { login }
-  labels(first: 20) { nodes { name } }
+  labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
   comments(last: 1) { totalCount nodes { author { login } createdAt } }
 }
@@ -22,7 +23,8 @@ fragment issueFields on Issue {
 
 /// A search returns node ids only, a page at a time: hydrating the nodes
 /// is what costs, and an issue matched by several searches is looked up
-/// once.
+/// once. `viewer` is for the "needs you" reasons, which compare the last
+/// commenter with it.
 pub const SEARCH_QUERY: &str = "
 query($q: String!, $limit: Int!, $after: String) {
   viewer { login }

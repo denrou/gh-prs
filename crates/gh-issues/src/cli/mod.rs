@@ -39,7 +39,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
     let filter = cli.filter();
     let issues: Vec<&Issue> = issues.iter().filter(|issue| filter.keeps(issue)).collect();
     if cli.json {
-        ui::out(&render::json(&issues));
+        match render::json(&issues) {
+            Ok(json) => ui::out(&json),
+            Err(error) => {
+                ui::error(&format!("cannot write the issues as JSON: {error}"));
+                return ExitCode::from(FAILURE);
+            }
+        }
     } else if issues.is_empty() {
         let nothing = if filter.is_empty() {
             "No open issues."
