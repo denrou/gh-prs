@@ -4,8 +4,9 @@ How gh-prs is put together and what it promises, for a first read of the code. R
 
 ## Shape
 
-A library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
-code). The Python version (0.18.1 and earlier, on PyPI) was ported module by
+A Cargo workspace with one crate so far, `crates/gh-prs`; the paths below
+are relative to it. A library crate plus a thin binary (`src/main.rs`: argv →
+`cli::run` → exit code). The Python version (0.18.1 and earlier, on PyPI) was ported module by
 module and removed once the Rust one had run in its place. The store files,
 the `--json` fields and the commands stayed identical, so nothing migrates;
 the few deliberate differences are an unrecognised review decision blocking
@@ -99,7 +100,7 @@ value means "expired, show the PR", not "corrupt store". Stored reasons stay
 strings rather than `Reason`: a name this version doesn't know simply
 doesn't match, so the snooze lapses and the PR shows.
 
-Guardrails in `Cargo.toml`: `clippy::wildcard_enum_match_arm` is denied (a
+Guardrails in the workspace `Cargo.toml`, which every crate inherits: `clippy::wildcard_enum_match_arm` is denied (a
 `_ =>` arm on our own enums would quietly cancel the exhaustiveness the
 model relies on; on other crates' enums, such as `serde_json::Value`, the
 accessor methods are simpler than listing every variant), and so are

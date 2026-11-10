@@ -77,7 +77,7 @@ and Linux on x86_64, the two targets the release builds. Elsewhere, build it
 from the repository with a Rust toolchain:
 
 ```bash
-cargo install --locked --git https://github.com/denrou/gh-prs.git
+cargo install --locked --git https://github.com/denrou/gh-prs.git gh-prs
 ```
 
 Coming from the Python version (0.18.1 and earlier, on PyPI), the config,
