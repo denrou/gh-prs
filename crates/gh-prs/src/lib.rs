@@ -5,7 +5,6 @@
 pub mod attention;
 pub mod cli;
 pub mod config;
-pub mod duration;
 pub mod gh;
 pub mod hide;
 pub mod merge;
@@ -13,3 +12,5 @@ pub mod mute;
 pub mod pr;
 pub mod snooze;
 pub mod store;
+
+pub use gh_common::duration;

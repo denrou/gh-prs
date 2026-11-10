@@ -8,16 +8,12 @@
 //! silently hide PRs.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
-use std::thread;
 
 use serde_json::Value;
 
 use super::parse::{RawPr, Unrecognised, to_pull_request};
 use super::queries::{COUNT_QUERY, SEARCH_QUERY, hydrate_query, pr_query};
-use super::{GhError, Runner, graphql};
+use super::{GhError, Runner, Task, flags, gather, graphql};
 use crate::attention::{Staleness, attention_reasons};
 use crate::merge::MergeMode;
 use crate::pr::{Oid, PrState, PullRequest, Reason, Reported, Role};
@@ -33,23 +29,11 @@ pub(super) const LABEL_PAGE_LIMIT: usize = 20;
 /// PRs hydrated per request: 2-5s, half GitHub's 10s budget with room for
 /// the slowdown it applies to concurrent requests.
 const HYDRATE_BATCH: usize = 15;
-/// Concurrent requests per phase: GitHub throttles concurrent requests per
-/// token, so a large union of PRs must not fan out unbounded.
-const MAX_PARALLEL: usize = 8;
-
 fn search_string(qualifier: Role) -> String {
     format!(
         "is:pr is:open archived:false sort:updated-desc {}:@me",
         qualifier.as_str()
     )
-}
-
-/// `gh` flags from (flag, value) pairs.
-fn flags(pairs: &[(&str, String)]) -> Vec<String> {
-    pairs
-        .iter()
-        .flat_map(|(flag, value)| [(*flag).to_owned(), value.clone()])
-        .collect()
 }
 
 /// The exact number of open PRs matching one qualifier's search, without
@@ -162,70 +146,6 @@ fn hydrate(
         Some(_) | None => Err(GhError(format!(
             "{context}: response has no nodes block (unexpected shape)"
         ))),
-    }
-}
-
-type Task<'a, T> = Box<dyn FnOnce() -> Result<T, GhError> + Send + 'a>;
-
-/// Run labelled `gh` calls in parallel, at most [`MAX_PARALLEL`] at a time;
-/// results come back in submission order. Any failure fails them all, with
-/// every failure listed: a partial result would silently hide PRs.
-fn gather<T: Send>(tasks: Vec<(String, Task<'_, T>)>, what: &str) -> Result<Vec<T>, GhError> {
-    let count = tasks.len();
-    let (labels, tasks): (Vec<String>, Vec<_>) = tasks
-        .into_iter()
-        .map(|(l, t)| (l, Mutex::new(Some(t))))
-        .unzip();
-    let results: Vec<Mutex<Option<Result<T, String>>>> =
-        (0..count).map(|_| Mutex::new(None)).collect();
-    let next = AtomicUsize::new(0);
-    thread::scope(|scope| {
-        for _ in 0..count.clamp(1, MAX_PARALLEL) {
-            scope.spawn(|| {
-                loop {
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    if index >= count {
-                        break;
-                    }
-                    let task = tasks[index]
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .take();
-                    let outcome = task.map(|task| match catch_unwind(AssertUnwindSafe(task)) {
-                        Ok(result) => result.map_err(|e| e.0),
-                        Err(panic) => {
-                            let message = panic
-                                .downcast_ref::<&str>()
-                                .map(|s| (*s).to_owned())
-                                .or_else(|| panic.downcast_ref::<String>().cloned())
-                                .unwrap_or_default();
-                            Err(format!("{} crashed: {message}", labels[index]))
-                        }
-                    });
-                    *results[index]
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = outcome;
-                }
-            });
-        }
-    });
-    let mut values = Vec::with_capacity(count);
-    let mut errors = Vec::new();
-    for (label, result) in labels.iter().zip(results) {
-        match result.into_inner().unwrap_or_else(PoisonError::into_inner) {
-            Some(Ok(value)) => values.push(value),
-            Some(Err(error)) => errors.push(error),
-            None => errors.push(format!("{label} never ran")),
-        }
-    }
-    if errors.is_empty() {
-        Ok(values)
-    } else {
-        errors.sort();
-        Err(GhError(format!(
-            "Some {what} failed; results would be incomplete:\n  {}",
-            errors.join("\n  ")
-        )))
     }
 }
 

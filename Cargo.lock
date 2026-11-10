@@ -238,23 +238,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "gh-prs"
+name = "gh-common"
 version = "0.19.0"
 dependencies = [
  "anstream",
  "anstyle",
- "clap",
  "indicatif",
+ "jiff",
+ "serde_json",
+ "tempfile",
+ "terminal_size",
+ "thiserror",
+ "wait-timeout",
+]
+
+[[package]]
+name = "gh-prs"
+version = "0.19.0"
+dependencies = [
+ "anstyle",
+ "clap",
+ "gh-common",
  "jiff",
  "libtest-mimic",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
- "terminal_size",
  "thiserror",
  "unicode-width",
- "wait-timeout",
 ]
 
 [[package]]

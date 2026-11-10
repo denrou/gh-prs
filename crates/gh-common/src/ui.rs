@@ -36,6 +36,11 @@ pub fn link(text: &str, url: &str) -> String {
     }
 }
 
+/// Strip every style from here on (`--no-color`), on both streams.
+pub fn disable_color() {
+    anstream::ColorChoice::Never.write_global();
+}
+
 pub fn out(line: &str) {
     anstream::println!("{line}");
 }

@@ -4,9 +4,28 @@ How gh-prs is put together and what it promises, for a first read of the code. R
 
 ## Shape
 
-A Cargo workspace with one crate so far, `crates/gh-prs`; the paths below
-are relative to it. A library crate plus a thin binary (`src/main.rs`: argv →
-`cli::run` → exit code). The Python version (0.18.1 and earlier, on PyPI) was ported module by
+A Cargo workspace of two crates. `crates/gh-common` is the plumbing a
+second tool would need as is, and knows nothing about pull requests:
+
+- **`gh.rs`** — Running `gh`: the `Runner` trait (run `gh` with these
+  arguments, return status, stdout, stderr), the real `GhCli` runner with
+  its 60 s timeout, `GhError`, `graphql()` (the validated envelope),
+  `gather()` (the bounded parallel fan-out) and `flags()`.
+- **`store.rs`** — JSON file I/O shared by the machine-managed stores:
+  `store_path()` (per tool), `read_json()` (missing file → `None`, every
+  other failure an error for the caller to wrap), `write_json()`
+  (write-then-rename, sorted keys, 2-space indent), `format_timestamp()`.
+  Shape validation stays with each store.
+- **`duration.rs`** — Pure calendar arithmetic: the `Duration` value
+  (`amount` + `Unit`, hours or days) that `parse_duration()` returns, its
+  `until()` deadline, and `add_days()`, the working-day step. No I/O.
+- **`ui.rs`** — Terminal output: styles, width, spinner, hyperlinks, the
+  standard messages.
+
+`crates/gh-prs` is the tool, and the paths below are relative to it: a
+library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
+code). A module moves to `gh-common` once a second tool uses it unchanged,
+not before: the snooze, hide and mute stores stay here until then. The Python version (0.18.1 and earlier, on PyPI) was ported module by
 module and removed once the Rust one had run in its place. The store files,
 the `--json` fields and the commands stayed identical, so nothing migrates;
 the few deliberate differences are an unrecognised review decision blocking
@@ -20,10 +39,8 @@ a merge, an unrecognised review state counting as submitted for
 - **`attention.rs`** — Pure attention policy: `attention_reasons()`, the
   **stale** and **stale-draft** nudges (`Staleness`, `DEFAULT_STALE_AFTER`).
   No `gh` calls.
-- **`gh/`** — Stateless wrapper around the `gh` CLI, relying on the user's
-  existing `gh auth` session. `mod.rs` holds the `Runner` trait (run `gh`
-  with these arguments, return status, stdout, stderr), the real `GhCli`
-  runner with its 60 s timeout, the GraphQL envelope and `GhError`;
+- **`gh/`** — What gh-prs asks of GitHub, through `gh_common::gh` and the
+  user's existing `gh auth` session, with no state of its own:
   `queries.rs` the GraphQL text (`PR_FRAGMENT`); `parse.rs` the raw serde
   types and `to_pull_request()`; `fetch.rs` `fetch_prs()`, `count_prs()`,
   `fetch_pr()`, `fetch_pr_head()`, `resolve_pr()`, `approve_pr()` and
@@ -35,14 +52,8 @@ a merge, an unrecognised review state counting as submitted for
 - **`mute.rs`** — Pure mute policy: `MuteRule` plus `is_muted()` /
   `split_muted()`, deciding which fetched PRs a config rule silences for good
   (a bot's bumps for a stack you don't own). No `gh` calls.
-- **`duration.rs`** — Pure calendar arithmetic: the `Duration` value
-  (`amount` + `Unit`, hours or days) that `parse_duration()` returns, its
-  `until()` deadline, and `add_days()`, the working-day step. No I/O.
-- **`store.rs`** — JSON file I/O shared by the machine-managed stores:
-  `store_path()`, `read_json()` (missing file → `None`, every other failure
-  an error for the caller to wrap), `write_json()` (write-then-rename,
-  sorted keys, 2-space indent), `format_timestamp()`. Shape validation stays
-  with each store.
+- **`store.rs`** — `store_path()` for gh-prs's own directory; the I/O is
+  `gh_common::store`.
 - **`snooze.rs`** — Local per-PR snooze store (`{PR url: {oid, until,
 reasons}}` JSON at `$XDG_CONFIG_HOME/gh-prs/snooze.json`):
   `load_snoozes()`, `save_snoozes()`, `split_snoozed()`,
@@ -60,7 +71,7 @@ mute}` JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from
 - **`cli/`** — Command-line interface: `args.rs` (clap definitions),
   `mod.rs` (dispatch, settings, ref resolution, `prune_closed()`), `view.rs`
   (the attention and list views; mute → hide → snooze), `render.rs` (tables
-  and `--json`), `ui.rs` (styles, width, spinner, hyperlinks), and one file
+  and `--json`), and one file
   per subcommand family (`snooze.rs`, `hide.rs`, `merge.rs`).
 
 ## Type model
