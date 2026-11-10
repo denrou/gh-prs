@@ -1,5 +1,7 @@
 //! The tables and `--json`.
 
+use std::collections::HashMap;
+
 use anstyle::{AnsiColor, Style};
 use gh_common::table::{Cell, Layout, TITLE_MIN, cell, header, print_table};
 use gh_common::ui::{BOLD, DIM, bold, fg, out};
@@ -57,45 +59,60 @@ pub fn json(issues: &[&Issue]) -> Result<String, serde_json::Error> {
 }
 
 /// The title is cut to 80 columns; on a narrow screen it shrinks to
-/// [`TITLE_MIN`], then the labels to an ellipsis, then the title again. The
-/// number (the link) and the date never shrink.
-const LAYOUT: Layout = Layout {
-    title: 1,
-    title_cap: 80,
-    title_min: TITLE_MIN,
-    gives_way: Some((2, 1)),
-};
+/// [`TITLE_MIN`], then the labels (when the table has them) to an
+/// ellipsis, then the title again. The number (the link) and the date
+/// never shrink.
+const fn layout(with_labels: bool) -> Layout {
+    Layout {
+        title: 1,
+        title_cap: 80,
+        title_min: TITLE_MIN,
+        gives_way: if with_labels { Some((2, 1)) } else { None },
+    }
+}
 
 /// One table per repository, in the order of their most recently updated
 /// issue; within one, most recently updated first.
 pub fn by_repository(issues: &[&Issue], screen: usize) {
-    let mut repos: Vec<&str> = Vec::new();
+    let mut repos: Vec<(&str, Vec<&Issue>)> = Vec::new();
+    let mut index_of: HashMap<&str, usize> = HashMap::new();
     for issue in issues {
-        if !repos.contains(&issue.repo.as_str()) {
-            repos.push(&issue.repo);
-        }
+        let index = *index_of.entry(&issue.repo).or_insert_with(|| {
+            repos.push((&issue.repo, Vec::new()));
+            repos.len() - 1
+        });
+        repos[index].1.push(issue);
     }
-    for (index, repo) in repos.iter().enumerate() {
+    for (index, (repo, issues)) in repos.iter().enumerate() {
+        // A table where no issue carries a label has no labels column.
+        let with_labels = issues.iter().any(|issue| !issue.labels.is_empty());
         let rows: Vec<Vec<Cell>> = issues
             .iter()
-            .filter(|issue| issue.repo == *repo)
             .map(|issue| {
-                vec![
+                let mut row = vec![
                     Cell {
                         text: format!("#{}", issue.number),
                         style: BOLD,
                         url: issue.url.clone(),
                     },
                     cell(issue.title.as_str(), Style::new()),
-                    cell(issue.labels.join(", "), fg(AnsiColor::Yellow)),
-                    cell(issue.updated_at.split('T').next().unwrap_or_default(), DIM),
-                ]
+                ];
+                if with_labels {
+                    row.push(cell(issue.labels.join(", "), fg(AnsiColor::Yellow)));
+                }
+                // A date GitHub didn't send shows as unknown, not as blank.
+                let updated = match issue.updated_at.split('T').next() {
+                    Some(date) if !date.is_empty() => date,
+                    Some(_) | None => "—",
+                };
+                row.push(cell(updated, DIM));
+                row
             })
             .collect();
         if index > 0 {
             out("");
         }
         header(repo, bold(AnsiColor::Cyan), rows.len());
-        print_table(&rows, &LAYOUT, screen);
+        print_table(&rows, &layout(with_labels), screen);
     }
 }

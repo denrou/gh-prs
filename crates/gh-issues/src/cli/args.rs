@@ -24,7 +24,7 @@ pub struct Cli {
 
     /// only the issues of this repository; a bare name matches whoever owns
     /// it (repeat for several)
-    #[arg(short = 'R', long = "repo", value_name = "[OWNER/]REPO")]
+    #[arg(short = 'R', long = "repo", value_name = "[OWNER/]REPO", value_parser = repo_name)]
     pub repo: Vec<String>,
 
     /// only the issues carrying this label (repeat to require several)
@@ -43,14 +43,47 @@ pub struct Cli {
 impl Cli {
     /// What the filter flags ask for.
     pub fn filter(&self) -> Filter {
-        let roles = [(self.created, Role::Author), (self.owned, Role::Owner)]
-            .into_iter()
-            .filter_map(|(asked, role)| asked.then_some(role))
-            .collect();
-        Filter {
-            roles,
-            repos: self.repo.clone(),
-            labels: self.label.clone(),
+        let mut roles = Vec::new();
+        if self.created {
+            roles.push(Role::Author);
+        }
+        if self.owned {
+            roles.push(Role::Owner);
+        }
+        Filter::new(roles, &self.repo, &self.label)
+    }
+}
+
+/// `owner/name` or a bare name: anything else (a URL, a trailing slash)
+/// would match no repository, which must not read as "no issue there".
+fn repo_name(value: &str) -> Result<String, String> {
+    let parts: Vec<&str> = value.split('/').collect();
+    let named = |part: &&str| !part.is_empty() && !part.contains(char::is_whitespace);
+    if parts.len() <= 2 && parts.iter().all(named) {
+        Ok(value.to_owned())
+    } else {
+        Err("expected OWNER/REPO or a bare repository name".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repository_is_a_name_with_or_without_its_owner() {
+        for value in ["widgets", "acme/widgets", "Acme/wid.gets-2"] {
+            assert_eq!(repo_name(value), Ok(value.to_owned()));
+        }
+        for value in [
+            "",
+            "acme/",
+            "/widgets",
+            "acme/widgets/",
+            "https://github.com/acme/widgets",
+            "acme widgets",
+        ] {
+            assert!(repo_name(value).is_err(), "{value}");
         }
     }
 }

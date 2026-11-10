@@ -33,11 +33,11 @@ Same two layers as gh-prs (root `ARCHITECTURE.md`, Parsing GitHub responses): se
 
 ## The view
 
-One table per repository, headed by its full name and its number of issues. Repositories come in the order of their most recently updated issue, and so do the issues within one: what moved last is on top. A row is the number (a link to the issue), the title, the labels and the date of the last update.
+One table per repository, headed by its full name and its number of issues. Repositories come in the order of their most recently updated issue, and so do the issues within one: what moved last is on top. A row is the number (a link to the issue), the title, the labels and the date of the last update (`—` when GitHub didn't send it). A table where no issue carries a label has no labels column.
 
 The title is cut to 80 columns. On a screen too narrow for the table, the title shrinks to 20 columns, then the labels to an ellipsis, then the title again; the number and the date never shrink. Column spacing and where a cut falls are not part of the contract.
 
-With nothing to show, the view says `No open issues.`, or `No matching issues.` when a filter is the reason.
+With nothing to show, the view says `No open issues.`, or `No matching issues.` when there are issues and the filters kept none.
 
 ## Filters (`filter.rs`, applied in `cli/`)
 
@@ -45,7 +45,7 @@ Every filter given must hold:
 
 - `-c`/`--created`: you are the author.
 - `-o`/`--owned`: it lives in a repository you own.
-- `-R`/`--repo`: it lives in that repository. `owner/name` is matched whole and a bare name against the name alone, whoever the owner. Repeated, any of them.
+- `-R`/`--repo`: it lives in that repository. `owner/name` is matched whole and a bare name against the name alone, whoever the owner. Repeated, any of them. Anything else (a URL, a trailing slash) is a usage error, since it would match nothing and read as "no issue there".
 - `-l`/`--label`: it carries that label. Repeated, all of them, as `gh issue list` does.
 
 Repository and label names are compared without case, as GitHub does. The filters are applied after the fetch, which is the same whatever the flags: an issue's `roles` in `--json` never depend on them (narrowing the searches themselves is issue #35). They apply to `--json` too.

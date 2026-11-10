@@ -3,45 +3,69 @@
 use crate::issue::{Issue, Role};
 
 /// What an issue must match to be shown: every criterion given.
+/// Repository and label names are compared without case, as GitHub does,
+/// so they are kept in lowercase.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
     /// The roles the viewer must hold on the issue, all of them.
-    pub roles: Vec<Role>,
+    roles: Vec<Role>,
     /// The repositories it may live in, as `owner/name` or a bare name;
     /// none means any.
-    pub repos: Vec<String>,
+    repos: Vec<String>,
     /// The labels it must carry, all of them.
-    pub labels: Vec<String>,
+    labels: Vec<String>,
 }
 
 impl Filter {
+    #[must_use]
+    pub fn new(roles: Vec<Role>, repos: &[String], labels: &[String]) -> Self {
+        let lowercase = |names: &[String]| names.iter().map(|name| name.to_lowercase()).collect();
+        Self {
+            roles,
+            repos: lowercase(repos),
+            labels: lowercase(labels),
+        }
+    }
+
     /// Nothing to narrow: every issue is kept.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.roles.is_empty() && self.repos.is_empty() && self.labels.is_empty()
     }
 
-    /// GitHub compares repository and label names without case, so does this.
     #[must_use]
     pub fn keeps(&self, issue: &Issue) -> bool {
-        let in_repo = |wanted: &String| {
-            let name = issue.repo.rsplit('/').next().unwrap_or(&issue.repo);
-            let target = if wanted.contains('/') {
-                &issue.repo
-            } else {
-                name
-            };
-            target.eq_ignore_ascii_case(wanted)
-        };
-        let labelled = |wanted: &String| {
-            issue
-                .labels
-                .iter()
-                .any(|label| label.to_lowercase() == wanted.to_lowercase())
-        };
         self.roles.iter().all(|role| issue.roles.contains(role))
-            && (self.repos.is_empty() || self.repos.iter().any(in_repo))
-            && self.labels.iter().all(labelled)
+            && self.in_a_wanted_repo(issue)
+            && self.carries_every_wanted_label(issue)
+    }
+
+    fn in_a_wanted_repo(&self, issue: &Issue) -> bool {
+        if self.repos.is_empty() {
+            return true;
+        }
+        let full = issue.repo.to_lowercase();
+        let name = full.rsplit('/').next().unwrap_or(&full);
+        self.repos.iter().any(|wanted| {
+            wanted
+                == if wanted.contains('/') {
+                    full.as_str()
+                } else {
+                    name
+                }
+        })
+    }
+
+    fn carries_every_wanted_label(&self, issue: &Issue) -> bool {
+        if self.labels.is_empty() {
+            return true;
+        }
+        let carried: Vec<String> = issue
+            .labels
+            .iter()
+            .map(|label| label.to_lowercase())
+            .collect();
+        self.labels.iter().all(|wanted| carried.contains(wanted))
     }
 }
 
@@ -81,10 +105,7 @@ mod tests {
 
     #[test]
     fn every_role_is_required() {
-        let filter = Filter {
-            roles: vec![Role::Author, Role::Owner],
-            ..Filter::default()
-        };
+        let filter = Filter::new(vec![Role::Author, Role::Owner], &[], &[]);
         assert!(!filter.is_empty());
         assert!(filter.keeps(&issue("a/b", &[], &[Role::Author, Role::Owner])));
         assert!(!filter.keeps(&issue("a/b", &[], &[Role::Author])));
@@ -93,10 +114,7 @@ mod tests {
 
     #[test]
     fn any_of_the_repositories_matches_without_case() {
-        let filter = Filter {
-            repos: words(&["Acme/Widgets", "tool"]),
-            ..Filter::default()
-        };
+        let filter = Filter::new(Vec::new(), &words(&["Acme/Widgets", "tool"]), &[]);
         assert!(filter.keeps(&issue("acme/widgets", &[], &[])));
         // A bare name matches the repository whoever owns it.
         assert!(filter.keeps(&issue("other/Tool", &[], &[])));
@@ -107,10 +125,7 @@ mod tests {
 
     #[test]
     fn every_label_is_required_without_case() {
-        let filter = Filter {
-            labels: words(&["Bug", "deferred"]),
-            ..Filter::default()
-        };
+        let filter = Filter::new(Vec::new(), &[], &words(&["Bug", "deferred"]));
         assert!(filter.keeps(&issue("a/b", &["bug", "Deferred", "x"], &[])));
         assert!(!filter.keeps(&issue("a/b", &["bug"], &[])));
         assert!(!filter.keeps(&issue("a/b", &[], &[])));
@@ -118,11 +133,7 @@ mod tests {
 
     #[test]
     fn criteria_combine() {
-        let filter = Filter {
-            roles: vec![Role::Owner],
-            repos: words(&["widgets"]),
-            labels: words(&["bug"]),
-        };
+        let filter = Filter::new(vec![Role::Owner], &words(&["widgets"]), &words(&["bug"]));
         assert!(filter.keeps(&issue("acme/widgets", &["bug"], &[Role::Owner])));
         assert!(!filter.keeps(&issue("acme/widgets", &["bug"], &[Role::Author])));
         assert!(!filter.keeps(&issue("acme/gadgets", &["bug"], &[Role::Owner])));

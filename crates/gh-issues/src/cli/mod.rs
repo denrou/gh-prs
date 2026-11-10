@@ -37,6 +37,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
     // The searches are the same whatever the filter, so that an issue's
     // roles in `--json` never depend on the flags.
     let filter = cli.filter();
+    let none_at_all = issues.is_empty();
     let issues: Vec<&Issue> = issues.iter().filter(|issue| filter.keeps(issue)).collect();
     if cli.json {
         match render::json(&issues) {
@@ -47,7 +48,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
             }
         }
     } else if issues.is_empty() {
-        let nothing = if filter.is_empty() {
+        let nothing = if none_at_all || filter.is_empty() {
             "No open issues."
         } else {
             "No matching issues."

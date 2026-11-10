@@ -652,7 +652,8 @@ confirmation step before it can ship.
   scripts and with the stores the Python versions wrote: change them
   deliberately, with a conformance scenario.
 - `--json` is a scripting interface: plain UTF-8 JSON, never coloured.
-- Tables are drawn by hand (`cli/render.rs`), with no layout crate: a
+- Tables are drawn by hand (`gh_common::table`, with gh-prs's columns and
+  layout in `cli/render.rs`), with no layout crate: a
   title line with a count, then rows with no column headers or borders,
   left-aligned. On a narrow screen the title
   shrinks first (down to 20 columns), then the repository (down to 8), then

@@ -37,19 +37,27 @@ pub struct Layout {
 }
 
 /// A borderless, headerless table with two spaces between columns, each
-/// cut ending in an ellipsis. The other columns never shrink.
+/// cut ending in an ellipsis. The other columns never shrink, and no
+/// column shrinks below its ellipsis. A `layout` naming a column the rows
+/// don't have leaves that column alone.
 pub fn print_table(rows: &[Vec<Cell>], layout: &Layout, screen: usize) {
-    let Some(first) = rows.first() else { return };
-    let mut widths: Vec<usize> = (0..first.len())
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if columns == 0 {
+        return;
+    }
+    let mut widths: Vec<usize> = (0..columns)
         .map(|column| {
             rows.iter()
-                .map(|row| row[column].text.width())
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.text.width())
                 .max()
                 .unwrap_or(0)
         })
         .collect();
-    widths[layout.title] = widths[layout.title].min(layout.title_cap);
-    let total = widths.iter().sum::<usize>() + 2 * (widths.len() - 1);
+    if let Some(title) = widths.get_mut(layout.title) {
+        *title = (*title).min(layout.title_cap);
+    }
+    let total = widths.iter().sum::<usize>() + 2 * (columns - 1);
     let mut excess = total.saturating_sub(screen);
     let steps = [
         Some((layout.title, layout.title_min)),
@@ -57,29 +65,34 @@ pub fn print_table(rows: &[Vec<Cell>], layout: &Layout, screen: usize) {
         Some((layout.title, 1)),
     ];
     for (column, floor) in steps.into_iter().flatten() {
-        let give = excess.min(widths[column].saturating_sub(floor));
-        widths[column] -= give;
+        let Some(width) = widths.get_mut(column) else {
+            continue;
+        };
+        let give = excess.min(width.saturating_sub(floor.max(1)));
+        *width -= give;
         excess -= give;
     }
     for row in rows {
         let mut line = String::new();
-        for (column, cell) in row.iter().enumerate() {
-            let text = truncate(&cell.text, widths[column]);
-            let padding = widths[column] - text.width();
+        for (cell, width) in row.iter().zip(&widths) {
+            let text = truncate(&cell.text, *width);
+            let padding = width.saturating_sub(text.width());
             line.push_str(&paint(&link(&text, &cell.url), cell.style));
-            if column + 1 < row.len() {
-                line.push_str(&" ".repeat(padding + 2));
-            }
+            line.push_str(&" ".repeat(padding + 2));
         }
-        out(&line);
+        out(line.trim_end());
     }
 }
 
-/// `text` cut to `width` columns, the last one an ellipsis when cut.
+/// `text` cut to `width` columns, the last one an ellipsis when cut (and
+/// nothing at all in no column).
 #[must_use]
 pub fn truncate(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
     }
     let mut cut = String::new();
     let mut used = 0;
@@ -114,6 +127,8 @@ mod tests {
         assert_eq!(truncate("Fix the parser", 14), "Fix the parser");
         assert_eq!(truncate("Fix the parser", 8), "Fix the…");
         assert_eq!(truncate("Fix the parser", 1), "…");
+        assert_eq!(truncate("Fix the parser", 0), "");
+        assert_eq!(truncate("", 0), "");
         // Wide characters count double.
         assert_eq!(truncate("日本語のタイトル", 7), "日本語…");
     }
