@@ -1,39 +1,17 @@
-[package]
-name = "gh-prs"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+# One version for every crate: a tag releases the whole workspace.
+[workspace.package]
 version = "0.19.0"
 edition = "2024"
 rust-version = "1.85"
-description = "CLI for listing GitHub pull requests that need your attention, powered by gh CLI"
 license = "MIT"
 repository = "https://github.com/denrou/gh-prs"
 publish = false
 
-[[test]]
-name = "conformance"
-path = "tests/conformance/main.rs"
-harness = false
-
-[dependencies]
-anstream = "1.0.0"
-anstyle = "1.0.14"
-clap = { version = "4.6.7", features = ["derive"] }
-indicatif = "0.18.6"
-jiff = "0.2.38"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-terminal_size = "0.4.4"
-thiserror = "2.0.21"
-unicode-width = "0.2.2"
-wait-timeout = "0.2.1"
-
-[dev-dependencies]
-jiff = { version = "0.2.38", features = ["tzdb-bundle-always"] }
-libtest-mimic = "0.8.2"
-regex = "1.13.1"
-serde_json = "1.0.154"
-tempfile = "3.27.0"
-
-[lints.clippy]
+[workspace.lints.clippy]
 # A `_ =>` arm on our own enums would quietly cancel the exhaustiveness the
 # fail-safe rules rely on (ARCHITECTURE.md, Type model).
 wildcard_enum_match_arm = "deny"
