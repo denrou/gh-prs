@@ -1,0 +1,5 @@
+error: the argument '--count' cannot be used with '--json'
+
+Usage: gh issues --count
+
+For more information, try '--help'.

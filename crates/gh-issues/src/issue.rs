@@ -40,6 +40,32 @@ impl Role {
     }
 }
 
+/// Why an issue needs the viewer. Declared in the alphabetical order of
+/// the names, like [`Role`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Reason {
+    /// Assigned to the viewer, and nothing more pressing.
+    Assigned,
+    /// Someone else spoke last in a thread the viewer has a say in.
+    Reply,
+    /// Opened by someone else in a repository of the viewer's, untouched.
+    Triage,
+}
+
+impl Reason {
+    pub const ALL: [Self; 3] = [Self::Assigned, Self::Reply, Self::Triage];
+
+    /// How `--json` names the reason.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Assigned => "assigned",
+            Self::Reply => "reply",
+            Self::Triage => "triage",
+        }
+    }
+}
+
 /// The latest comment on an issue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LastComment {
@@ -70,9 +96,16 @@ pub struct Issue {
     pub comments: Option<u64>,
     pub last_comment: Option<LastComment>,
     pub roles: BTreeSet<Role>,
+    /// Why it needs the viewer; empty when it doesn't.
+    pub attention: BTreeSet<Reason>,
 }
 
 impl Issue {
+    #[must_use]
+    pub fn needs_attention(&self) -> bool {
+        !self.attention.is_empty()
+    }
+
     /// `owner/name#number`, how the CLI names an issue in messages.
     #[must_use]
     pub fn id(&self) -> String {
@@ -92,5 +125,15 @@ mod tests {
         assert_eq!(names, sorted);
         let set: BTreeSet<Role> = Role::ALL.iter().rev().copied().collect();
         assert_eq!(set.into_iter().collect::<Vec<_>>(), Role::ALL);
+    }
+
+    #[test]
+    fn reasons_sort_by_name() {
+        let names: Vec<&str> = Reason::ALL.iter().map(|reason| reason.name()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+        let set: BTreeSet<Reason> = Reason::ALL.iter().rev().copied().collect();
+        assert_eq!(set.into_iter().collect::<Vec<_>>(), Reason::ALL);
     }
 }

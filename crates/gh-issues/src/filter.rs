@@ -89,6 +89,7 @@ mod tests {
             comments: Some(0),
             last_comment: None,
             roles: roles.iter().copied().collect::<BTreeSet<_>>(),
+            attention: BTreeSet::new(),
         }
     }
 

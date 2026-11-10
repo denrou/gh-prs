@@ -1,0 +1,2 @@
+Error: Some issue searches failed; results would be incomplete:
+  Search 'assignee' failed: HTTP 502: Bad Gateway

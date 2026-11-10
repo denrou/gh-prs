@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use super::parse::{RawIssue, to_issue};
 use super::queries::{SEARCH_QUERY, hydrate_query};
+use crate::attention::attention_reasons;
 use crate::issue::{Issue, Role};
 
 /// Ids per search request, GitHub's maximum.
@@ -31,6 +32,8 @@ fn search_string(role: Role) -> String {
 }
 
 struct Found {
+    /// The authenticated login, empty when GitHub didn't send it.
+    viewer: String,
     ids: Vec<String>,
     /// Every match.
     matched: u64,
@@ -48,6 +51,7 @@ fn search(runner: &dyn Runner, role: Role) -> Result<Found, GhError> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut after: Option<String> = None;
     let mut asked = 0;
+    let mut viewer = String::new();
     loop {
         let page = search_ids(
             runner,
@@ -58,6 +62,9 @@ fn search(runner: &dyn Runner, role: Role) -> Result<Found, GhError> {
             after.as_deref(),
         )?;
         asked += SEARCH_PAGE;
+        if viewer.is_empty() {
+            viewer = page.viewer;
+        }
         // The ordering is live, so an issue updated between two pages
         // comes back twice.
         for id in page.ids {
@@ -80,6 +87,7 @@ fn search(runner: &dyn Runner, role: Role) -> Result<Found, GhError> {
         };
         if let Some(capped) = done {
             return Ok(Found {
+                viewer,
                 ids,
                 matched: page.issue_count,
                 capped,
@@ -88,8 +96,8 @@ fn search(runner: &dyn Runner, role: Role) -> Result<Found, GhError> {
     }
 }
 
-/// The open issues the viewer holds one of `roles` on, most recently
-/// updated first.
+/// The open issues the viewer holds one of `roles` on, with the reasons
+/// they need the viewer, most recently updated first.
 ///
 /// `on_warning` hears about degraded coverage instead of silence: a search
 /// that matched more than GitHub serves.
@@ -121,6 +129,19 @@ pub fn fetch_issues(
                 found.matched
             ));
         }
+    }
+
+    // viewer.login is non-null in GitHub's schema; without it nobody's
+    // turn could be told, and guessing would withhold or invent reasons.
+    let viewer = searches
+        .iter()
+        .map(|found| found.viewer.as_str())
+        .find(|viewer| !viewer.is_empty())
+        .unwrap_or_default();
+    if !searches.is_empty() && viewer.is_empty() {
+        return Err(GhError(
+            "Could not determine the authenticated user from gh's response".to_owned(),
+        ));
     }
 
     // Each issue is hydrated once however many searches matched it, so
@@ -181,6 +202,7 @@ pub fn fetch_issues(
         }
         let mut issue = to_issue(&raw);
         issue.roles.clone_from(roles);
+        issue.attention = attention_reasons(&issue, viewer);
         issues.push(issue);
     }
     // Stable, so issues updated at the same instant keep the search order.
@@ -394,7 +416,7 @@ mod tests {
             *searched.lock().unwrap() += 1;
             let mut cursor = cursor.lock().unwrap();
             *cursor += 1;
-            ok(&json!({"data": {"results": {
+            ok(&json!({"data": {"viewer": {"login": "me"}, "results": {
                 "issueCount": 5000,
                 "pageInfo": {"hasNextPage": true, "endCursor": cursor.to_string()},
                 "nodes": [{"id": format!("I_{cursor}")}],
@@ -432,7 +454,7 @@ mod tests {
                     "nodes": [{"id": "I_3"}],
                 })
             };
-            ok(&json!({"data": {"results": results}}))
+            ok(&json!({"data": {"viewer": {"login": "me"}, "results": results}}))
         };
         let (issues, warnings) = fetch(&runner, &[Role::Commenter]);
         assert_eq!(issues.unwrap().len(), 1);
@@ -464,7 +486,7 @@ mod tests {
                 return ok(&json!({"data": {"nodes": [node("I_1", 1, "2026-11-01T00:00:00Z")]}}));
             }
             let more = variable(args, "after").is_none();
-            ok(&json!({"data": {"results": {
+            ok(&json!({"data": {"viewer": {"login": "me"}, "results": {
                 "issueCount": 1,
                 "pageInfo": {"hasNextPage": more, "endCursor": "1"},
                 "nodes": [{"id": "I_1"}],
@@ -480,6 +502,38 @@ mod tests {
             .filter(|arg| arg.starts_with("ids[]="))
             .count();
         assert_eq!(looked_up, 1);
+    }
+
+    #[test]
+    fn a_search_without_a_viewer_fails_the_fetch() {
+        let runner =
+            |_: &[String]| ok(&json!({"data": {"results": {"issueCount": 0, "nodes": []}}}));
+        let (issues, _) = fetch(&runner, &[Role::Author]);
+        assert_eq!(
+            issues.unwrap_err().0,
+            "Could not determine the authenticated user from gh's response"
+        );
+    }
+
+    #[test]
+    fn reasons_are_read_against_the_viewer() {
+        let searches = [("author", vec!["I_1"]), ("user", vec!["I_2"])];
+        let mut answered = node("I_1", 1, "2026-11-02T00:00:00Z");
+        answered["author"] = json!({"login": "me"});
+        answered["comments"] = json!({
+            "totalCount": 1,
+            "nodes": [{"author": {"login": "maintainer"}, "createdAt": "2026-11-02T00:00:00Z"}],
+        });
+        let nodes = [answered, node("I_2", 2, "2026-11-01T00:00:00Z")];
+        let calls = Mutex::new(Vec::new());
+        let runner = github(&searches, &nodes, &calls);
+        let (issues, _) = fetch(&runner, &[Role::Author, Role::Owner]);
+        let reasons: Vec<Vec<&str>> = issues
+            .unwrap()
+            .iter()
+            .map(|issue| issue.attention.iter().map(|reason| reason.name()).collect())
+            .collect();
+        assert_eq!(reasons, [vec!["reply"], vec!["triage"]]);
     }
 
     #[test]

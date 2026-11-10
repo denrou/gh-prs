@@ -1,0 +1,110 @@
+[
+  {
+    "number": 1,
+    "repo": "other/tool",
+    "title": "Crash on start",
+    "author": "me",
+    "url": "https://github.com/other/tool/issues/1",
+    "updated_at": "2099-01-07T00:00:00Z",
+    "created_at": "2099-01-01T00:00:00Z",
+    "labels": [],
+    "assignees": [],
+    "comments": 2,
+    "last_comment": {
+      "author": "maintainer",
+      "created_at": "2099-01-01T00:00:00Z"
+    },
+    "roles": [
+      "author",
+      "commenter"
+    ],
+    "attention": [
+      "reply"
+    ]
+  },
+  {
+    "number": 3,
+    "repo": "acme/widgets",
+    "title": "Typo in the README",
+    "author": "visitor",
+    "url": "https://github.com/acme/widgets/issues/3",
+    "updated_at": "2099-01-05T00:00:00Z",
+    "created_at": "2099-01-01T00:00:00Z",
+    "labels": [],
+    "assignees": [],
+    "comments": 0,
+    "last_comment": null,
+    "roles": [
+      "owner"
+    ],
+    "attention": [
+      "triage"
+    ]
+  },
+  {
+    "number": 4,
+    "repo": "acme/widgets",
+    "title": "Does it run on Windows?",
+    "author": "visitor",
+    "url": "https://github.com/acme/widgets/issues/4",
+    "updated_at": "2099-01-04T00:00:00Z",
+    "created_at": "2099-01-01T00:00:00Z",
+    "labels": [],
+    "assignees": [],
+    "comments": 2,
+    "last_comment": {
+      "author": "visitor",
+      "created_at": "2099-01-01T00:00:00Z"
+    },
+    "roles": [
+      "owner"
+    ],
+    "attention": [
+      "triage"
+    ]
+  },
+  {
+    "number": 5,
+    "repo": "team/infra",
+    "title": "Take over the release",
+    "author": "lead",
+    "url": "https://github.com/team/infra/issues/5",
+    "updated_at": "2099-01-03T00:00:00Z",
+    "created_at": "2099-01-01T00:00:00Z",
+    "labels": [],
+    "assignees": [
+      "me"
+    ],
+    "comments": 0,
+    "last_comment": null,
+    "roles": [
+      "assignee"
+    ],
+    "attention": [
+      "assigned"
+    ]
+  },
+  {
+    "number": 7,
+    "repo": "acme/widgets",
+    "title": "Answered, then they came back",
+    "author": "visitor",
+    "url": "https://github.com/acme/widgets/issues/7",
+    "updated_at": "2099-01-01T00:00:00Z",
+    "created_at": "2099-01-01T00:00:00Z",
+    "labels": [],
+    "assignees": [],
+    "comments": 2,
+    "last_comment": {
+      "author": null,
+      "created_at": "2099-01-01T00:00:00Z"
+    },
+    "roles": [
+      "commenter",
+      "owner"
+    ],
+    "attention": [
+      "reply"
+    ]
+  }
+]

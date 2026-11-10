@@ -1,0 +1,8 @@
+{
+  "args": [
+    "--count",
+    "--json"
+  ],
+  "gh": {},
+  "loose_stderr": true
+}

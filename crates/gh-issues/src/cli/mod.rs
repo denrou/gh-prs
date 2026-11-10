@@ -7,6 +7,7 @@ mod render;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
+use anstyle::AnsiColor;
 use clap::Parser;
 use gh_common::gh::Runner;
 use gh_common::ui;
@@ -39,13 +40,37 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
     let filter = cli.filter();
     let none_at_all = issues.is_empty();
     let issues: Vec<&Issue> = issues.iter().filter(|issue| filter.keeps(issue)).collect();
+    let needing: Vec<&Issue> = issues
+        .iter()
+        .copied()
+        .filter(|issue| issue.needs_attention())
+        .collect();
+    if cli.count {
+        // Not styled: a status bar reads it.
+        println!("{}", needing.len());
+        return ExitCode::SUCCESS;
+    }
     if cli.json {
-        match render::json(&issues) {
-            Ok(json) => ui::out(&json),
+        let shown = if cli.attention { &needing } else { &issues };
+        return match render::json(shown) {
+            Ok(json) => {
+                ui::out(&json);
+                ExitCode::SUCCESS
+            }
             Err(error) => {
                 ui::error(&format!("cannot write the issues as JSON: {error}"));
-                return ExitCode::from(FAILURE);
+                ExitCode::from(FAILURE)
             }
+        };
+    }
+    if cli.attention {
+        if needing.is_empty() {
+            ui::out(&format!(
+                "{} Nothing needs you.",
+                ui::paint("✓", ui::fg(AnsiColor::Green))
+            ));
+        } else {
+            render::attention(&needing, ui::width());
         }
     } else if issues.is_empty() {
         let nothing = if none_at_all || filter.is_empty() {
@@ -55,6 +80,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
         };
         ui::out(&ui::paint(nothing, ui::DIM));
     } else {
+        // What needs you first, then the whole backlog, those included.
+        if !needing.is_empty() {
+            render::attention(&needing, ui::width());
+            ui::out("");
+        }
         render::by_repository(&issues, ui::width());
     }
     ExitCode::SUCCESS
