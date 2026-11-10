@@ -196,8 +196,9 @@ the default view, about 40 for `-a`). `reviewThreads` is gated by an
 search matched, because hydrating each thread's last comment is the one
 measurably expensive fragment field (~+1s on `involves`, ~+3% on `author`;
 `isResolved` alone costs nothing) and only the authored-only **unresolved**
-reason reads it. A PR deleted (null node) or positively closed/merged
-between the two phases is dropped: the searches only match open PRs.
+reason reads it. A PR deleted between the two phases (a null node, which GitHub reports
+with a `NOT_FOUND` error that `nodes_by_id()` forgives) or positively
+closed/merged is dropped: the searches only match open PRs.
 Each PR's reasons come from the pure `attention_reasons()`.
 
 Performance notes (measured once; exact figures drift, the ratios hold):

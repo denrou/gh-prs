@@ -30,7 +30,7 @@ struct LastComment<'a> {
     created_at: &'a str,
 }
 
-pub fn json(issues: &[Issue]) -> String {
+pub fn json(issues: &[Issue]) -> Result<String, serde_json::Error> {
     let rows: Vec<Row<'_>> = issues
         .iter()
         .map(|issue| Row {
@@ -51,7 +51,7 @@ pub fn json(issues: &[Issue]) -> String {
             roles: issue.roles.iter().map(|role| role.name()).collect(),
         })
         .collect();
-    serde_json::to_string_pretty(&rows).unwrap_or_default()
+    serde_json::to_string_pretty(&rows)
 }
 
 /// One line per issue, most recently updated first.

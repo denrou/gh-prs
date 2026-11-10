@@ -35,7 +35,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
         }
     };
     if cli.json {
-        ui::out(&render::json(&issues));
+        match render::json(&issues) {
+            Ok(json) => ui::out(&json),
+            Err(error) => {
+                ui::error(&format!("cannot write the issues as JSON: {error}"));
+                return ExitCode::from(FAILURE);
+            }
+        }
     } else {
         render::list(&issues);
     }

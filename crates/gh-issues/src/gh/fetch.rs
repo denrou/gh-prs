@@ -5,7 +5,7 @@
 //! however many searches matched it. Any failed search or lookup fails the
 //! whole fetch: a partial result would silently hide issues.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use gh_common::gh::{GhError, Runner, Task, gather, nodes_by_id, search_ids};
 use serde_json::Value;
@@ -22,9 +22,6 @@ pub const SEARCH_MAX: u64 = 1000;
 /// reviews), so a batch stays far from the ~10s after which GitHub answers
 /// HTTP 502.
 const HYDRATE_BATCH: usize = 50;
-/// The `first:` cap on an issue's labels in the fragment.
-#[cfg(test)]
-const LABEL_PAGE_LIMIT: usize = 20;
 
 fn search_string(role: Role) -> String {
     format!(
@@ -35,8 +32,10 @@ fn search_string(role: Role) -> String {
 
 struct Found {
     ids: Vec<String>,
-    /// Every match, which the ids fall short of past [`SEARCH_MAX`].
+    /// Every match.
     matched: u64,
+    /// GitHub had more to serve than it would.
+    capped: bool,
 }
 
 /// Every id one role's search matches, most recently updated first. The
@@ -46,7 +45,9 @@ fn search(runner: &dyn Runner, role: Role) -> Result<Found, GhError> {
     let context = format!("Search '{}'", role.name());
     let query = search_string(role);
     let mut ids: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut after: Option<String> = None;
+    let mut asked = 0;
     loop {
         let page = search_ids(
             runner,
@@ -56,18 +57,33 @@ fn search(runner: &dyn Runner, role: Role) -> Result<Found, GhError> {
             SEARCH_PAGE,
             after.as_deref(),
         )?;
-        let empty = page.ids.is_empty();
-        ids.extend(page.ids);
-        let full = ids.len() as u64 >= SEARCH_MAX;
-        match page.next {
-            // An empty page with a next one would loop forever.
-            Some(next) if !empty && !full => after = Some(next),
-            Some(_) | None => {
-                return Ok(Found {
-                    ids,
-                    matched: page.issue_count,
-                });
+        asked += SEARCH_PAGE;
+        // The ordering is live, so an issue updated between two pages
+        // comes back twice.
+        for id in page.ids {
+            if seen.insert(id.clone()) {
+                ids.push(id);
             }
+        }
+        // `Some(capped)` once there is nothing more to read.
+        let done = match page.next {
+            None => Some(page.issue_count > SEARCH_MAX),
+            Some(_) if asked >= SEARCH_MAX => Some(true),
+            // A cursor that doesn't move would loop forever. A page with
+            // no readable id is no reason to stop: GitHub answers null for
+            // a match the token cannot read.
+            Some(next) if after.as_ref() == Some(&next) => Some(false),
+            Some(next) => {
+                after = Some(next);
+                None
+            }
+        };
+        if let Some(capped) = done {
+            return Ok(Found {
+                ids,
+                matched: page.issue_count,
+                capped,
+            });
         }
     }
 }
@@ -77,6 +93,9 @@ fn search(runner: &dyn Runner, role: Role) -> Result<Found, GhError> {
 ///
 /// `on_warning` hears about degraded coverage instead of silence: a search
 /// that matched more than GitHub serves.
+///
+/// Narrowing the searches by filter (fewer roles, one repository) is not
+/// done: issue #35 has the idea.
 pub fn fetch_issues(
     runner: &dyn Runner,
     roles: &[Role],
@@ -95,10 +114,9 @@ pub fn fetch_issues(
         "issue searches",
     )?;
     for (role, found) in roles.iter().zip(&searches) {
-        let shown = found.ids.len() as u64;
-        if found.matched > shown {
+        if found.capped {
             on_warning(&format!(
-                "search '{}' matched {} issues; showing the {shown} most recently updated",
+                "search '{}' matched {} issues; GitHub serves the {SEARCH_MAX} most recently updated, the rest is missing",
                 role.name(),
                 found.matched
             ));
@@ -178,7 +196,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::gh::queries::ISSUE_FRAGMENT;
 
     fn ok(value: &Value) -> Result<Output, GhError> {
         Ok(Output {
@@ -272,11 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn label_cap_matches_the_fragment() {
-        assert!(ISSUE_FRAGMENT.contains(&format!("labels(first: {LABEL_PAGE_LIMIT})")));
-    }
-
-    #[test]
     fn roles_are_the_union_of_the_searches_and_each_issue_is_looked_up_once() {
         let searches = [("author", vec!["I_1", "I_2"]), ("user", vec!["I_2", "I_3"])];
         let nodes = [
@@ -340,46 +352,134 @@ mod tests {
         assert_eq!(lookups, 5);
     }
 
+    /// A `gh` whose search always answers `page` and whose lookup finds
+    /// nothing, counting the searches.
+    fn searching<'a>(page: &'a Value, searched: &'a Mutex<u32>) -> impl Runner + 'a {
+        move |args: &[String]| {
+            if variable(args, "q").is_none() {
+                return ok(&json!({"data": {"nodes": []}}));
+            }
+            *searched.lock().unwrap() += 1;
+            ok(&json!({"data": {"viewer": {"login": "me"}, "results": page}}))
+        }
+    }
+
     #[test]
     fn matches_beyond_what_github_serves_are_reported() {
-        let runner = |args: &[String]| {
-            if args.iter().any(|arg| arg.starts_with("ids[]=")) {
-                return ok(&json!({"data": {"nodes": [node("I_1", 1, "2026-11-01T00:00:00Z")]}}));
-            }
-            ok(&json!({"data": {
-                "viewer": {"login": "me"},
-                "results": {
-                    "issueCount": 1500,
-                    "pageInfo": {"hasNextPage": false, "endCursor": null},
-                    "nodes": [{"id": "I_1"}],
-                },
-            }}))
-        };
-        let (issues, warnings) = fetch(&runner, &[Role::Owner]);
-        assert_eq!(issues.unwrap().len(), 1);
+        let page = json!({
+            "issueCount": 1500,
+            "pageInfo": {"hasNextPage": false, "endCursor": null},
+            "nodes": [{"id": "I_1"}],
+        });
+        let searched = Mutex::new(0);
+        let (issues, warnings) = fetch(&searching(&page, &searched), &[Role::Owner]);
+        assert!(issues.is_ok());
         assert_eq!(
             warnings,
-            ["search 'owner' matched 1500 issues; showing the 1 most recently updated"]
+            [
+                "search 'owner' matched 1500 issues; GitHub serves the 1000 most recently updated, the rest is missing"
+            ]
         );
     }
 
     #[test]
-    fn an_empty_page_ends_the_search_even_if_github_promises_more() {
-        let calls = Mutex::new(0_u32);
-        let runner = |_: &[String]| {
-            *calls.lock().unwrap() += 1;
-            ok(&json!({"data": {
-                "viewer": {"login": "me"},
-                "results": {
-                    "issueCount": 0,
-                    "pageInfo": {"hasNextPage": true, "endCursor": "x"},
-                    "nodes": [],
-                },
-            }}))
+    fn paging_stops_at_what_github_serves() {
+        // A GitHub that would go on forever, each page with a new cursor.
+        let cursor = Mutex::new(0_u32);
+        let searched = Mutex::new(0_u32);
+        let runner = |args: &[String]| {
+            if variable(args, "q").is_none() {
+                return ok(&json!({"data": {"nodes": []}}));
+            }
+            *searched.lock().unwrap() += 1;
+            let mut cursor = cursor.lock().unwrap();
+            *cursor += 1;
+            ok(&json!({"data": {"results": {
+                "issueCount": 5000,
+                "pageInfo": {"hasNextPage": true, "endCursor": cursor.to_string()},
+                "nodes": [{"id": format!("I_{cursor}")}],
+            }}}))
+        };
+        let (issues, warnings) = fetch(&runner, &[Role::Owner]);
+        assert!(issues.is_ok());
+        assert_eq!(
+            u64::from(*searched.lock().unwrap()),
+            SEARCH_MAX / SEARCH_PAGE
+        );
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn unreadable_matches_are_not_a_truncation_and_do_not_end_the_search() {
+        // Two matches the token cannot read on the first page, a readable
+        // one on the second.
+        let searched = Mutex::new(0_u32);
+        let runner = |args: &[String]| {
+            if variable(args, "q").is_none() {
+                return ok(&json!({"data": {"nodes": [node("I_3", 3, "2026-11-01T00:00:00Z")]}}));
+            }
+            *searched.lock().unwrap() += 1;
+            let results = if variable(args, "after").is_none() {
+                json!({
+                    "issueCount": 3,
+                    "pageInfo": {"hasNextPage": true, "endCursor": "2"},
+                    "nodes": [null, {}],
+                })
+            } else {
+                json!({
+                    "issueCount": 3,
+                    "pageInfo": {"hasNextPage": false, "endCursor": "3"},
+                    "nodes": [{"id": "I_3"}],
+                })
+            };
+            ok(&json!({"data": {"results": results}}))
+        };
+        let (issues, warnings) = fetch(&runner, &[Role::Commenter]);
+        assert_eq!(issues.unwrap().len(), 1);
+        assert_eq!(*searched.lock().unwrap(), 2);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn a_cursor_that_does_not_move_ends_the_search() {
+        let page = json!({
+            "issueCount": 1,
+            "pageInfo": {"hasNextPage": true, "endCursor": "same"},
+            "nodes": [{"id": "I_1"}],
+        });
+        let searched = Mutex::new(0);
+        let (issues, warnings) = fetch(&searching(&page, &searched), &[Role::Owner]);
+        assert!(issues.is_ok());
+        // The second page repeats the first one's cursor.
+        assert_eq!(*searched.lock().unwrap(), 2);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn an_issue_seen_on_two_pages_is_looked_up_once() {
+        let calls = Mutex::new(Vec::new());
+        let runner = |args: &[String]| {
+            calls.lock().unwrap().push(args.to_vec());
+            if variable(args, "q").is_none() {
+                return ok(&json!({"data": {"nodes": [node("I_1", 1, "2026-11-01T00:00:00Z")]}}));
+            }
+            let more = variable(args, "after").is_none();
+            ok(&json!({"data": {"results": {
+                "issueCount": 1,
+                "pageInfo": {"hasNextPage": more, "endCursor": "1"},
+                "nodes": [{"id": "I_1"}],
+            }}}))
         };
         let (issues, _) = fetch(&runner, &[Role::Owner]);
-        assert!(issues.unwrap().is_empty());
-        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(issues.unwrap().len(), 1);
+        let looked_up = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter(|arg| arg.starts_with("ids[]="))
+            .count();
+        assert_eq!(looked_up, 1);
     }
 
     #[test]

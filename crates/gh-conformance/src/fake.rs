@@ -124,6 +124,27 @@ fn stdout_text(stdout: &Value) -> String {
     }
 }
 
+/// The answer to a lookup by id, as GitHub gives it: a node that resolves
+/// to nothing is a null entry and a `NOT_FOUND` error, which makes `gh`
+/// exit non-zero while still printing the response.
+#[must_use]
+pub fn lookup(nodes: Vec<Value>) -> Reply {
+    let errors: Vec<Value> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.is_null())
+        .map(|(index, _)| json!({ "type": "NOT_FOUND", "path": ["nodes", index], "message": "Not Found" }))
+        .collect();
+    if errors.is_empty() {
+        return Reply::ok(json!({ "data": { "nodes": nodes } }));
+    }
+    Reply {
+        exit: 1,
+        stdout: json!({ "data": { "nodes": nodes }, "errors": errors }).to_string(),
+        stderr: "gh: Not Found\n".to_owned(),
+    }
+}
+
 /// The scenario's viewer, as GraphQL returns it.
 #[must_use]
 pub fn viewer(gh: &Value) -> Value {
