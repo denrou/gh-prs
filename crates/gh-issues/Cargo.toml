@@ -1,0 +1,27 @@
+[package]
+name = "gh-issues"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CLI for listing the GitHub issues you own, created, are assigned or commented on, powered by gh CLI"
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[test]]
+name = "conformance"
+path = "tests/conformance/main.rs"
+harness = false
+
+[dependencies]
+clap.workspace = true
+gh-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gh-conformance.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

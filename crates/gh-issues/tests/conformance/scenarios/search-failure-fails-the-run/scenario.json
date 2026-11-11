@@ -1,0 +1,90 @@
+{
+  "args": [
+    "--no-color"
+  ],
+  "gh": {
+    "searches": {
+      "author": [
+        "I_1",
+        "I_2"
+      ],
+      "user": [
+        "I_2",
+        "I_3"
+      ],
+      "assignee": [
+        "I_3"
+      ],
+      "commenter": [
+        "I_1"
+      ]
+    },
+    "nodes": {
+      "I_1": {
+        "number": 1,
+        "title": "Crash on start",
+        "repository": {
+          "nameWithOwner": "other/tool"
+        },
+        "updatedAt": "2099-01-01T00:00:00Z",
+        "author": {
+          "login": "me"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "bug"
+            }
+          ]
+        },
+        "comments": {
+          "totalCount": 2,
+          "nodes": [
+            {
+              "author": {
+                "login": "maintainer"
+              },
+              "createdAt": "2099-01-01T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "I_2": {
+        "number": 2,
+        "title": "Add a --watch flag",
+        "updatedAt": "2099-01-03T00:00:00Z",
+        "author": {
+          "login": "me"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "enhancement"
+            },
+            {
+              "name": "deferred"
+            }
+          ]
+        }
+      },
+      "I_3": {
+        "number": 3,
+        "title": "Typo in the README",
+        "updatedAt": "2099-01-02T00:00:00Z",
+        "assignees": {
+          "nodes": [
+            {
+              "login": "me"
+            }
+          ]
+        }
+      }
+    },
+    "responses": {
+      "search:user": {
+        "exit": 1,
+        "stderr": "HTTP 502: Bad Gateway\n"
+      }
+    }
+  }
+}

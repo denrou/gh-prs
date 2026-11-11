@@ -1,0 +1,28 @@
+{
+  "args": [
+    "--no-color"
+  ],
+  "gh": {
+    "searches": {
+      "author": [
+        "I_1",
+        "I_2",
+        "I_3",
+        "I_4"
+      ]
+    },
+    "nodes": {
+      "I_1": {
+        "number": 1
+      },
+      "I_2": {
+        "number": 2,
+        "state": "CLOSED"
+      },
+      "I_4": {
+        "number": 4,
+        "state": "SOMETHING_NEW"
+      }
+    }
+  }
+}

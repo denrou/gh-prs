@@ -131,20 +131,42 @@ pub fn graphql(
     context: &str,
     args: &[String],
 ) -> Result<Map<String, Value>, GhError> {
+    graphql_ignoring(runner, context, args, &|_| false)
+}
+
+/// [`graphql`], except that a response whose errors are all `ignorable`
+/// is read as if it carried none. `gh` exits non-zero as soon as a
+/// response has errors, even beside a usable `data` block, so the exit
+/// status is forgiven with them.
+fn graphql_ignoring(
+    runner: &dyn Runner,
+    context: &str,
+    args: &[String],
+    ignorable: &dyn Fn(&Value) -> bool,
+) -> Result<Map<String, Value>, GhError> {
     let mut full = vec!["api".to_owned(), "graphql".to_owned()];
     full.extend_from_slice(args);
     let output = runner.run(&full)?;
-    if !output.success {
+    let parsed = serde_json::from_str::<Value>(&output.stdout);
+    let forgiven = parsed
+        .as_ref()
+        .ok()
+        .and_then(|payload| payload.get("errors"))
+        .and_then(Value::as_array)
+        .is_some_and(|errors| !errors.is_empty() && errors.iter().all(ignorable));
+    if !output.success && !forgiven {
         return Err(GhError(format!("{context} failed: {}", output.detail())));
     }
-    let payload: Value = serde_json::from_str(&output.stdout)
-        .map_err(|e| GhError(format!("{context}: invalid JSON from gh: {e}")))?;
+    let payload = parsed.map_err(|e| GhError(format!("{context}: invalid JSON from gh: {e}")))?;
     let Value::Object(mut payload) = payload else {
         return Err(GhError(format!(
             "{context}: unexpected response from gh (not a JSON object)"
         )));
     };
-    if let Some(errors) = payload.get("errors").filter(|errors| is_truthy(errors)) {
+    if let Some(errors) = payload
+        .get("errors")
+        .filter(|errors| is_truthy(errors) && !forgiven)
+    {
         let messages: Vec<String> = errors
             .as_array()
             .map(|errors| errors.iter().map(error_message).collect())
@@ -238,6 +260,125 @@ pub fn gather<T: Send>(tasks: Vec<(String, Task<'_, T>)>, what: &str) -> Result<
             errors.join("\n  ")
         )))
     }
+}
+
+/// One page of a search, as node ids: hydrating the nodes is what costs.
+#[derive(Debug)]
+pub struct SearchResult {
+    /// The authenticated login, empty when GitHub didn't send it.
+    pub viewer: String,
+    pub ids: Vec<String>,
+    /// Every match, beyond the page.
+    pub issue_count: u64,
+    /// Where the next page starts, when the query asked for `pageInfo` and
+    /// there is one.
+    pub next: Option<String>,
+}
+
+/// Run a search that returns node ids. `query` takes `$q` and `$limit`
+/// (and `$after` when `after` is given) and answers `viewer { login }` and
+/// `results { issueCount nodes { id } }`, with `pageInfo { hasNextPage
+/// endCursor }` if the caller pages.
+pub fn search_ids(
+    runner: &dyn Runner,
+    context: &str,
+    query: &str,
+    q: &str,
+    limit: u64,
+    after: Option<&str>,
+) -> Result<SearchResult, GhError> {
+    let mut args = flags(&[
+        ("-f", format!("query={query}")),
+        ("-f", format!("q={q}")),
+        ("-F", format!("limit={limit}")),
+    ]);
+    if let Some(after) = after {
+        args.extend(["-f".to_owned(), format!("after={after}")]);
+    }
+    let data = graphql(runner, context, &args)?;
+    let results = data
+        .get("results")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            GhError(format!(
+                "{context}: response has no results block (unexpected shape)"
+            ))
+        })?;
+    let no_id = || {
+        GhError(format!(
+            "{context}: result without a node id (unexpected shape)"
+        ))
+    };
+    let nodes = match results.get("nodes") {
+        None => &[][..],
+        Some(nodes) if nodes.is_null() => &[][..],
+        Some(nodes) => nodes.as_array().ok_or_else(no_id)?.as_slice(),
+    };
+    let mut ids = Vec::new();
+    for node in nodes {
+        // GitHub returns null (or an empty object) for an inaccessible match.
+        if node.is_null() || node.as_object().is_some_and(Map::is_empty) {
+            continue;
+        }
+        let id = node
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(no_id)?;
+        ids.push(id.to_owned());
+    }
+    let page = results.get("pageInfo");
+    let next = page
+        .filter(|page| page["hasNextPage"].as_bool() == Some(true))
+        .and_then(|page| page["endCursor"].as_str())
+        .filter(|cursor| !cursor.is_empty())
+        .map(str::to_owned);
+    Ok(SearchResult {
+        viewer: data
+            .get("viewer")
+            .and_then(|viewer| viewer["login"].as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        ids,
+        issue_count: results
+            .get("issueCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        next,
+    })
+}
+
+/// Look nodes up by id with `query` (which takes `$ids`, plus whatever
+/// `variables` bind); a null entry is a node that vanished meanwhile.
+/// GitHub reports each of those as a `NOT_FOUND` error beside the nodes it
+/// did find, which is no failure: the caller drops the null.
+pub fn nodes_by_id(
+    runner: &dyn Runner,
+    context: &str,
+    query: &str,
+    variables: &[String],
+    ids: &[String],
+) -> Result<Vec<Value>, GhError> {
+    let mut args = flags(&[("-f", format!("query={query}"))]);
+    args.extend_from_slice(variables);
+    for id in ids {
+        args.extend(["-f".to_owned(), format!("ids[]={id}")]);
+    }
+    let mut data = graphql_ignoring(runner, context, &args, &is_vanished_node)?;
+    match data.remove("nodes") {
+        Some(Value::Array(nodes)) => Ok(nodes),
+        Some(_) | None => Err(GhError(format!(
+            "{context}: response has no nodes block (unexpected shape)"
+        ))),
+    }
+}
+
+/// An error saying that one of the looked-up ids resolves to nothing.
+fn is_vanished_node(error: &Value) -> bool {
+    error["type"] == "NOT_FOUND"
+        && error["path"]
+            .as_array()
+            .is_some_and(|path| path.len() == 2 && path[0] == "nodes" && path[1].is_u64())
 }
 
 /// JSON truthiness as the GraphQL `errors` check has always read it: null,
@@ -356,6 +497,95 @@ mod tests {
             assert_eq!(
                 envelope(payload).unwrap_err().0,
                 "Search 'author': response has no data block (unexpected shape)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_search_without_a_viewer_has_an_empty_one() {
+        let page = search_ids(
+            &answering(r#"{"data": {"results": {"issueCount": 1, "nodes": [{"id": "A"}]}}}"#),
+            "Search",
+            "query",
+            "is:open",
+            100,
+            None,
+        )
+        .unwrap();
+        assert_eq!(page.viewer, "");
+        assert_eq!(page.ids, ["A"]);
+        assert_eq!(page.issue_count, 1);
+        assert_eq!(page.next, None);
+    }
+
+    #[test]
+    fn a_search_page_carries_the_next_cursor_only_when_there_is_one() {
+        let next = |page_info: &str| {
+            let answer = format!(
+                r#"{{"data": {{"viewer": {{"login": "me"}}, "results": {{"issueCount": 2, "pageInfo": {page_info}, "nodes": []}}}}}}"#
+            );
+            search_ids(
+                &answering(&answer),
+                "Search",
+                "query",
+                "is:open",
+                100,
+                Some("1"),
+            )
+            .unwrap()
+            .next
+        };
+        assert_eq!(
+            next(r#"{"hasNextPage": true, "endCursor": "abc"}"#),
+            Some("abc".to_owned())
+        );
+        assert_eq!(next(r#"{"hasNextPage": false, "endCursor": "abc"}"#), None);
+        assert_eq!(next(r#"{"hasNextPage": true, "endCursor": null}"#), None);
+        assert_eq!(next("null"), None);
+    }
+
+    /// What `gh` answers when one of two looked-up nodes is gone: both the
+    /// nodes and an error, and a non-zero exit.
+    fn one_node_gone() -> Result<Output, GhError> {
+        Ok(Output {
+            success: false,
+            stdout: r#"{"data":{"nodes":[{"id":"A"},null]},"errors":[{"type":"NOT_FOUND","path":["nodes",1],"message":"Not Found"}]}"#.to_owned(),
+            stderr: "gh: Not Found\n".to_owned(),
+        })
+    }
+
+    #[test]
+    fn a_vanished_node_is_a_null_not_a_failure() {
+        let nodes = nodes_by_id(&|_: &[String]| one_node_gone(), "Lookup", "query", &[], &[]);
+        assert_eq!(nodes, Ok(vec![serde_json::json!({"id": "A"}), Value::Null]));
+    }
+
+    #[test]
+    fn the_same_answer_fails_any_other_query() {
+        assert_eq!(
+            graphql(&|_: &[String]| one_node_gone(), "Search", &[]),
+            Err(GhError("Search failed: gh: Not Found".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_lookup_error_that_is_not_a_vanished_node_fails() {
+        for errors in [
+            r#"[{"type":"FORBIDDEN","path":["nodes",1],"message":"SSO"}]"#,
+            r#"[{"type":"NOT_FOUND","path":["viewer"],"message":"Not Found"}]"#,
+            r#"[{"type":"NOT_FOUND","path":["nodes",1],"message":"Not Found"},{"type":"RATE_LIMITED","message":"slow down"}]"#,
+        ] {
+            let answer = |_: &[String]| {
+                Ok(Output {
+                    success: false,
+                    stdout: format!(r#"{{"data":{{"nodes":[null]}},"errors":{errors}}}"#),
+                    stderr: "gh: boom\n".to_owned(),
+                })
+            };
+            assert_eq!(
+                nodes_by_id(&answer, "Lookup", "query", &[], &[]),
+                Err(GhError("Lookup failed: gh: boom".to_owned())),
+                "{errors}"
             );
         }
     }

@@ -13,4 +13,4 @@ pub use fetch::{
     merge_pr, resolve_pr,
 };
 pub use gh_common::gh::{GH_TIMEOUT, GhCli, GhError, Output, Runner};
-use gh_common::gh::{Task, flags, gather, graphql};
+use gh_common::gh::{SearchResult, Task, flags, gather, graphql, nodes_by_id, search_ids};

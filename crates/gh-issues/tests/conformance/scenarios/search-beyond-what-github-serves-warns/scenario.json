@@ -1,0 +1,20 @@
+{
+  "args": [
+    "--no-color"
+  ],
+  "gh": {
+    "searches": {
+      "user": [
+        "I_1"
+      ]
+    },
+    "issueCounts": {
+      "user": 1500
+    },
+    "nodes": {
+      "I_1": {
+        "number": 1
+      }
+    }
+  }
+}

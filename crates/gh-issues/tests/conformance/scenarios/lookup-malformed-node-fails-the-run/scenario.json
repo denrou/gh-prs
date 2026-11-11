@@ -1,0 +1,18 @@
+{
+  "args": [
+    "--no-color"
+  ],
+  "gh": {
+    "searches": {
+      "author": [
+        "I_1"
+      ]
+    },
+    "nodes": {
+      "I_1": {
+        "number": 1,
+        "title": 7
+      }
+    }
+  }
+}
