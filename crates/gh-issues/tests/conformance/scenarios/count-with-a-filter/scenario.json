@@ -1,0 +1,152 @@
+{
+  "args": [
+    "--count",
+    "-R",
+    "other/tool"
+  ],
+  "gh": {
+    "searches": {
+      "author": [
+        "I_1",
+        "I_2",
+        "I_6"
+      ],
+      "user": [
+        "I_2",
+        "I_3",
+        "I_4",
+        "I_7"
+      ],
+      "assignee": [
+        "I_5"
+      ],
+      "commenter": [
+        "I_1",
+        "I_7"
+      ]
+    },
+    "nodes": {
+      "I_1": {
+        "number": 1,
+        "title": "Crash on start",
+        "repository": {
+          "nameWithOwner": "other/tool"
+        },
+        "updatedAt": "2099-01-07T00:00:00Z",
+        "author": {
+          "login": "me"
+        },
+        "comments": {
+          "totalCount": 2,
+          "nodes": [
+            {
+              "author": {
+                "login": "maintainer"
+              },
+              "createdAt": "2099-01-01T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "I_2": {
+        "number": 2,
+        "title": "My own backlog item",
+        "updatedAt": "2099-01-06T00:00:00Z",
+        "author": {
+          "login": "me"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "deferred"
+            }
+          ]
+        }
+      },
+      "I_3": {
+        "number": 3,
+        "title": "Typo in the README",
+        "updatedAt": "2099-01-05T00:00:00Z",
+        "author": {
+          "login": "visitor"
+        }
+      },
+      "I_4": {
+        "number": 4,
+        "title": "Does it run on Windows?",
+        "updatedAt": "2099-01-04T00:00:00Z",
+        "author": {
+          "login": "visitor"
+        },
+        "comments": {
+          "totalCount": 2,
+          "nodes": [
+            {
+              "author": {
+                "login": "visitor"
+              },
+              "createdAt": "2099-01-01T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "I_5": {
+        "number": 5,
+        "title": "Take over the release",
+        "repository": {
+          "nameWithOwner": "team/infra"
+        },
+        "updatedAt": "2099-01-03T00:00:00Z",
+        "author": {
+          "login": "lead"
+        },
+        "assignees": {
+          "nodes": [
+            {
+              "login": "me"
+            }
+          ]
+        }
+      },
+      "I_6": {
+        "number": 6,
+        "title": "I spoke last",
+        "repository": {
+          "nameWithOwner": "other/tool"
+        },
+        "updatedAt": "2099-01-02T00:00:00Z",
+        "author": {
+          "login": "me"
+        },
+        "comments": {
+          "totalCount": 2,
+          "nodes": [
+            {
+              "author": {
+                "login": "me"
+              },
+              "createdAt": "2099-01-01T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "I_7": {
+        "number": 7,
+        "title": "Answered, then they came back",
+        "updatedAt": "2099-01-01T00:00:00Z",
+        "author": {
+          "login": "visitor"
+        },
+        "comments": {
+          "totalCount": 2,
+          "nodes": [
+            {
+              "author": null,
+              "createdAt": "2099-01-01T00:00:00Z"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

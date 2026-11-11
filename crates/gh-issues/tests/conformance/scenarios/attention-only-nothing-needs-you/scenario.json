@@ -1,0 +1,33 @@
+{
+  "args": [
+    "--no-color",
+    "--attention"
+  ],
+  "gh": {
+    "searches": {
+      "author": [
+        "I_2"
+      ],
+      "user": [
+        "I_2"
+      ]
+    },
+    "nodes": {
+      "I_2": {
+        "number": 2,
+        "title": "My own backlog item",
+        "updatedAt": "2099-01-06T00:00:00Z",
+        "author": {
+          "login": "me"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "deferred"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

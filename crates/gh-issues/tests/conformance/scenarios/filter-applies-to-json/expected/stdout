@@ -16,6 +16,7 @@
     "roles": [
       "author",
       "commenter"
-    ]
+    ],
+    "attention": []
   }
 ]

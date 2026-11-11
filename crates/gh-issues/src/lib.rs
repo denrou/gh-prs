@@ -3,6 +3,7 @@
 //!
 //! The binary in `main.rs` stays a thin shell over this library.
 
+pub mod attention;
 pub mod cli;
 pub mod filter;
 pub mod gh;

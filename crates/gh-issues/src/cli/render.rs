@@ -7,7 +7,7 @@ use gh_common::table::{Cell, Layout, TITLE_MIN, cell, header, print_table};
 use gh_common::ui::{BOLD, DIM, bold, fg, out};
 use serde::Serialize;
 
-use crate::issue::Issue;
+use crate::issue::{Issue, Reason};
 
 /// One issue in `--json`, a scripting interface: field names and order are
 /// part of the contract.
@@ -26,6 +26,8 @@ struct Row<'a> {
     comments: Option<u64>,
     last_comment: Option<LastComment<'a>>,
     roles: Vec<&'static str>,
+    /// Why it needs you; empty when it doesn't.
+    attention: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -53,9 +55,90 @@ pub fn json(issues: &[&Issue]) -> Result<String, serde_json::Error> {
                 created_at: &comment.created_at,
             }),
             roles: issue.roles.iter().map(|role| role.name()).collect(),
+            attention: issue.attention.iter().map(|reason| reason.name()).collect(),
         })
         .collect();
     serde_json::to_string_pretty(&rows)
+}
+
+/// The "needs you" sections, in display order.
+const SECTIONS: [(Reason, &str, Style); 3] = [
+    (
+        Reason::Reply,
+        "Waiting for your reply",
+        bold(AnsiColor::Magenta),
+    ),
+    (
+        Reason::Triage,
+        "New in your repositories",
+        bold(AnsiColor::Green),
+    ),
+    (Reason::Assigned, "Assigned to you", bold(AnsiColor::Blue)),
+];
+
+/// The floor of the repository column on a narrow screen.
+const REPO_MIN: usize = 8;
+
+/// One section per reason: the repository (in full: two owners can have
+/// one of the same name), the number, the title, who is waiting and the
+/// last update. On a narrow screen the title shrinks first, then the
+/// repository.
+pub fn attention(issues: &[&Issue], screen: usize) {
+    let layout = Layout {
+        title: 2,
+        title_cap: 70,
+        title_min: TITLE_MIN,
+        gives_way: Some((0, REPO_MIN)),
+    };
+    let mut first = true;
+    for (reason, title, style) in SECTIONS {
+        let rows: Vec<Vec<Cell>> = issues
+            .iter()
+            .filter(|issue| issue.attention.contains(&reason))
+            .map(|issue| {
+                // Who spoke last when a reply is owed, else who opened it;
+                // the author stands in for a commenter who is gone.
+                let commenter = issue
+                    .last_comment
+                    .as_ref()
+                    .and_then(|comment| comment.author.as_deref())
+                    .filter(|_| reason == Reason::Reply);
+                let who = commenter.or(issue.author.as_deref());
+                vec![
+                    cell(issue.repo.as_str(), fg(AnsiColor::Cyan)),
+                    number_cell(issue),
+                    cell(issue.title.as_str(), Style::new()),
+                    cell(who.unwrap_or("—"), fg(AnsiColor::Magenta)),
+                    cell(updated_date(issue), DIM),
+                ]
+            })
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        if !first {
+            out("");
+        }
+        first = false;
+        header(title, style, rows.len());
+        print_table(&rows, &layout, screen);
+    }
+}
+
+fn number_cell(issue: &Issue) -> Cell {
+    Cell {
+        text: format!("#{}", issue.number),
+        style: BOLD,
+        url: issue.url.clone(),
+    }
+}
+
+/// A date GitHub didn't send shows as unknown, not as blank.
+fn updated_date(issue: &Issue) -> &str {
+    match issue.updated_at.split('T').next() {
+        Some(date) if !date.is_empty() => date,
+        Some(_) | None => "—",
+    }
 }
 
 /// The title is cut to 80 columns; on a narrow screen it shrinks to
@@ -89,23 +172,11 @@ pub fn by_repository(issues: &[&Issue], screen: usize) {
         let rows: Vec<Vec<Cell>> = issues
             .iter()
             .map(|issue| {
-                let mut row = vec![
-                    Cell {
-                        text: format!("#{}", issue.number),
-                        style: BOLD,
-                        url: issue.url.clone(),
-                    },
-                    cell(issue.title.as_str(), Style::new()),
-                ];
+                let mut row = vec![number_cell(issue), cell(issue.title.as_str(), Style::new())];
                 if with_labels {
                     row.push(cell(issue.labels.join(", "), fg(AnsiColor::Yellow)));
                 }
-                // A date GitHub didn't send shows as unknown, not as blank.
-                let updated = match issue.updated_at.split('T').next() {
-                    Some(date) if !date.is_empty() => date,
-                    Some(_) | None => "—",
-                };
-                row.push(cell(updated, DIM));
+                row.push(cell(updated_date(issue), DIM));
                 row
             })
             .collect();

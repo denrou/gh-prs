@@ -93,7 +93,7 @@ impl RawIssue {
 }
 
 /// The issue a node describes, without its roles (the caller knows which
-/// searches matched it).
+/// searches matched it) and so without its reasons, which read them.
 pub(super) fn to_issue(raw: &RawIssue) -> Issue {
     let comments = raw.comments.as_ref();
     Issue {
@@ -119,6 +119,7 @@ pub(super) fn to_issue(raw: &RawIssue) -> Issue {
                 created_at: comment.created_at.clone().unwrap_or_default(),
             }),
         roles: BTreeSet::new(),
+        attention: BTreeSet::new(),
     }
 }
 

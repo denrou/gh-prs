@@ -31,6 +31,15 @@ pub struct Cli {
     #[arg(short = 'l', long = "label", value_name = "NAME")]
     pub label: Vec<String>,
 
+    /// only the issues that need you: a reply, a triage, or assigned to you
+    // Deliberate: no `-a`, which widens to everything in `gh prs`.
+    #[arg(long = "attention")]
+    pub attention: bool,
+
+    /// print only the number of issues that need you (for status bars)
+    #[arg(long, conflicts_with = "json")]
+    pub count: bool,
+
     /// output raw JSON instead of tables
     #[arg(long)]
     pub json: bool,

@@ -6,14 +6,15 @@ How gh-issues is put together and what it promises. The workspace's shape, the s
 
 One place for the open issues that are yours to look at: those in repositories you own, and those you created, are assigned or commented on, wherever they live. It only reads GitHub.
 
-It is early: today it shows them grouped by repository, or as `--json`, with filters. The "needs you" reasons, and `hide`, `snooze` and `mute` are the next pull requests, and are written here as they land.
+It shows what needs you first (a reply, a triage, an assignment), then the whole backlog grouped by repository, with filters, `--json`, and `--count` for a status bar. `hide`, `snooze` and `mute` are the next pull request, and are written here as they land.
 
 ## Shape
 
 A library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit code), as gh-prs.
 
-- **`issue.rs`** — `Issue`, `LastComment`, and `Role`: why an issue was found (`assignee`, `author`, `commenter`, `owner`), one per search.
+- **`issue.rs`** — `Issue`, `LastComment`, `Role`: why an issue was found (`assignee`, `author`, `commenter`, `owner`), one per search, and `Reason`: why it needs you.
 - **`gh/`** — What gh-issues asks of GitHub, through `gh_common::gh`: `queries.rs` the GraphQL text (`ISSUE_FRAGMENT`), `parse.rs` the raw serde types and `to_issue()`, `fetch.rs` `fetch_issues()`.
+- **`attention.rs`** — Pure attention policy: `attention_reasons()`. No `gh` calls.
 - **`filter.rs`** — Pure: `Filter`, what the filter flags ask for, and `keeps()`.
 - **`cli/`** — `args.rs` (clap definitions), `mod.rs` (the run and the exit codes), `render.rs` (the tables and `--json`).
 
@@ -31,13 +32,33 @@ Same two layers as gh-prs (root `ARCHITECTURE.md`, Parsing GitHub responses): se
 
 "Error" must never look like "nothing to do": a failed search or lookup fails the whole run, with every failure listed, rather than showing a partial list. Errors go to stderr with exit code `1`; a usage error, from clap, exits `2`.
 
+## Attention logic (`attention.rs`)
+
+The question is whose move it is. An issue needs you when any of these hold:
+
+- **reply** — someone else spoke last in a thread you have a say in: you opened it, commented in it, or it is assigned to you. Your own last word calls for nothing: the ball is with them.
+- **triage** — it lives in a repository you own, someone else opened it, and nobody has taken it: you have not commented, and it is assigned to no one. A label is no sign of triage, since an issue template sets one on its own. Their own follow-up comments do not make it a **reply**, since you never spoke; answering it is the triage, after which it is a thread you have a say in.
+- **assigned** — someone else's issue is assigned to you and no reply is owed: standing work, which stays listed after your own last word. An issue you opened and took yourself is your own backlog and needs nothing.
+
+Your own backlog (issues you opened in your repositories, with nobody answering) needs nothing, which is most of it.
+
+Unknowns read as someone else's word, yours to answer: a last commenter or an author whose account is gone is not you. An issue wrongly shown costs a glance; one wrongly withheld is a person left without an answer. Authorship and assignment are read from the issue itself as well as from the searches, so an issue of yours beyond the 1000 matches a search serves is still yours; commenting can only be known from the `commenter` search. The reasons exclude each other today, so an issue has at most one; `attention` stays a set, as in gh-prs, for the reasons to come. Logins are compared without case.
+
+The viewer's login comes with the searches. Without it nobody's turn can be told, so the fetch fails rather than guess.
+
+Not covered: an issue that only mentions you (there is no search for it yet), and bots, whose comments count as anyone's until the mute rules exist.
+
 ## The view
 
-One table per repository, headed by its full name and its number of issues. Repositories come in the order of their most recently updated issue, and so do the issues within one: what moved last is on top. A row is the number (a link to the issue), the title, the labels and the date of the last update (`—` when GitHub didn't send it). A table where no issue carries a label has no labels column.
+By default, the "needs you" sections come first, when there are any: `Waiting for your reply`, `New in your repositories`, `Assigned to you`, each a table of repository (in full, since two owners can have one of the same name), number, title, who is waiting (who spoke last when a reply is owed, else who opened it; `—` when unknown) and the date of the last update. Then the whole backlog, those issues included.
+
+`--attention` shows the sections alone, and `✓ Nothing needs you.` when there are none. It has no `-a`, which widens to everything in `gh prs`. `--count` prints only the number of issues that need you, unstyled, for a status bar; on a failure it prints no number and exits `1`, so an error never reads as zero. `--count` with `--json` is a usage error.
+
+The backlog is one table per repository, headed by its full name and its number of issues. Repositories come in the order of their most recently updated issue, and so do the issues within one: what moved last is on top. A row is the number (a link to the issue), the title, the labels and the date of the last update (`—` when GitHub didn't send it). A table where no issue carries a label has no labels column.
 
 The title is cut to 80 columns. On a screen too narrow for the table, the title shrinks to 20 columns, then the labels to an ellipsis, then the title again; the number and the date never shrink. Column spacing and where a cut falls are not part of the contract.
 
-With nothing to show, the view says `No open issues.`, or `No matching issues.` when there are issues and the filters kept none.
+With nothing to show, the view says `No open issues.`, or `No matching issues.` when there are issues and the filters kept none, `--attention` included: a mistyped filter must not read as all clear. `--count` still prints `0` there, since a status bar wants a number.
 
 ## Filters (`filter.rs`, applied in `cli/`)
 
@@ -48,8 +69,8 @@ Every filter given must hold:
 - `-R`/`--repo`: it lives in that repository. `owner/name` is matched whole and a bare name against the name alone, whoever the owner. Repeated, any of them. Anything else (a URL, a trailing slash) is a usage error, since it would match nothing and read as "no issue there".
 - `-l`/`--label`: it carries that label. Repeated, all of them, as `gh issue list` does.
 
-Repository and label names are compared without case, as GitHub does. The filters are applied after the fetch, which is the same whatever the flags: an issue's `roles` in `--json` never depend on them (narrowing the searches themselves is issue #35). They apply to `--json` too.
+Repository and label names are compared without case, as GitHub does. The filters also narrow `--attention` and `--count`. They are applied after the fetch, which is the same whatever the flags: an issue's `roles` in `--json` never depend on them (narrowing the searches themselves is issue #35). They apply to `--json` too.
 
 ## `--json`
 
-A scripting interface: the field names and their order are part of the contract. One object per issue: `number`, `repo`, `title`, `author`, `url`, `updated_at`, `created_at`, `labels`, `assignees`, `comments` (`null` when unknown), `last_comment` (`{author, created_at}` or `null`), `roles` (sorted).
+A scripting interface: the field names and their order are part of the contract. One object per issue: `number`, `repo`, `title`, `author`, `url`, `updated_at`, `created_at`, `labels`, `assignees`, `comments` (`null` when unknown), `last_comment` (`{author, created_at}` or `null`), `roles` (sorted), `attention` (the reasons, sorted; empty when it doesn't need you). With `--attention`, only the issues that need you.
