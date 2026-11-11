@@ -13,7 +13,7 @@ use gh_common::ui;
 
 use self::args::Cli;
 use crate::gh::fetch_issues;
-use crate::issue::Role;
+use crate::issue::{Issue, Role};
 
 const FAILURE: u8 = 1;
 
@@ -34,6 +34,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
             return ExitCode::from(FAILURE);
         }
     };
+    // The searches are the same whatever the filter, so that an issue's
+    // roles in `--json` never depend on the flags.
+    let filter = cli.filter();
+    let none_at_all = issues.is_empty();
+    let issues: Vec<&Issue> = issues.iter().filter(|issue| filter.keeps(issue)).collect();
     if cli.json {
         match render::json(&issues) {
             Ok(json) => ui::out(&json),
@@ -42,8 +47,15 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
                 return ExitCode::from(FAILURE);
             }
         }
+    } else if issues.is_empty() {
+        let nothing = if none_at_all || filter.is_empty() {
+            "No open issues."
+        } else {
+            "No matching issues."
+        };
+        ui::out(&ui::paint(nothing, ui::DIM));
     } else {
-        render::list(&issues);
+        render::by_repository(&issues, ui::width());
     }
     ExitCode::SUCCESS
 }

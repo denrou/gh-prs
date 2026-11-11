@@ -1,0 +1,8 @@
+{
+  "args": [
+    "-R",
+    "https://github.com/acme/widgets"
+  ],
+  "gh": {},
+  "loose_stderr": true
+}

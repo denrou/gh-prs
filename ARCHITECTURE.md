@@ -23,13 +23,18 @@ knows nothing about pull requests or issues:
 - **`duration.rs`** — Pure calendar arithmetic: the `Duration` value
   (`amount` + `Unit`, hours or days) that `parse_duration()` returns, its
   `until()` deadline, and `add_days()`, the working-day step. No I/O.
+- **`table.rs`** — The borderless tables: `Cell`, `print_table()` with its
+  `Layout` (which columns give way on a narrow screen), `truncate()`,
+  `header()`.
 - **`ui.rs`** — Terminal output: styles, width, spinner, hyperlinks, the
   standard messages, and `strip_control_characters()` for text from GitHub.
 
 From here on this document is about `crates/gh-prs`, and the paths are
 relative to it: a library crate plus a thin binary (`src/main.rs`: argv → `cli::run` → exit
 code). A module moves to `gh-common` once a second tool uses it unchanged,
-not before: the snooze, hide and mute stores stay here until then. The Python version (0.18.1 and earlier, on PyPI) was ported module by
+not before: the snooze, hide and mute stores stay here until then, and so do
+the type model and the parsing rules below, which gh-issues follows but
+does not share as code. The Python version (0.18.1 and earlier, on PyPI) was ported module by
 module and removed once the Rust one had run in its place. The store files,
 the `--json` fields and the commands stayed identical, so nothing migrates;
 the few deliberate differences are an unrecognised review decision blocking
@@ -647,7 +652,8 @@ confirmation step before it can ship.
   scripts and with the stores the Python versions wrote: change them
   deliberately, with a conformance scenario.
 - `--json` is a scripting interface: plain UTF-8 JSON, never coloured.
-- Tables are drawn by hand (`cli/render.rs`), with no layout crate: a
+- Tables are drawn by hand (`gh_common::table`, with gh-prs's columns and
+  layout in `cli/render.rs`), with no layout crate: a
   title line with a count, then rows with no column headers or borders,
   left-aligned. On a narrow screen the title
   shrinks first (down to 20 columns), then the repository (down to 8), then
