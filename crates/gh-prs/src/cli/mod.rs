@@ -7,7 +7,6 @@ mod hide;
 mod merge;
 mod render;
 mod snooze;
-mod ui;
 mod view;
 
 use std::collections::BTreeMap;
@@ -15,6 +14,7 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use clap::Parser;
+use gh_common::ui;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
@@ -32,7 +32,7 @@ const USAGE: u8 = 2;
 pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> ExitCode {
     let cli = Cli::try_parse_from(args).unwrap_or_else(|error| error.exit());
     if cli.no_color {
-        anstream::ColorChoice::Never.write_global();
+        ui::disable_color();
     }
     let Some(command) = &cli.command else {
         return view::run(&cli, runner);

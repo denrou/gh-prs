@@ -30,7 +30,7 @@ jobs:
 
       - name: Check that the tag matches the crate version
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "gh-prs") | .version')"
           tag="${GITHUB_REF_NAME#v}"
           if [ "$version" != "$tag" ]; then
             echo "Cargo.toml version is $version but the tag is v$tag" >&2
