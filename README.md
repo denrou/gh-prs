@@ -290,3 +290,47 @@ An unreadable or invalid config only warns and falls back to the defaults
 (3-day calendar threshold, no mute rules), so a typo never breaks the tool —
 and a broken `mute` list hides nothing rather than guessing which rules you
 meant.
+
+## gh issues
+
+The same idea for issues, from the same repository: one place for the open
+issues that are yours to look at, powered by the `gh` CLI. It only reads
+GitHub.
+
+It finds the issues in repositories you own, and those you created, are
+assigned or commented on, wherever they live. What needs you comes first,
+then the whole backlog grouped by repository:
+
+- **Waiting for your reply** — someone else spoke last on an issue you
+  opened, commented on or are assigned.
+- **New in your repositories** — someone opened an issue in a repository you
+  own, you have not answered and nobody has taken it.
+- **Assigned to you** — someone else's issue handed to you, when no reply is
+  owed.
+
+Your own quiet backlog (issues you opened, with nobody answering) needs
+nothing, and is only listed.
+
+It is not in the Homebrew formula yet. Build it from the repository, then
+add the alias:
+
+```bash
+cargo install --locked --git https://github.com/denrou/gh-prs.git gh-issues
+gh alias set --shell issues 'gh-issues "$@"'
+```
+
+```bash
+gh issues                      # what needs you, then the backlog by repository
+gh issues --attention          # only what needs you
+gh issues --count              # how many need you (for status bars)
+gh issues -c                   # only the issues you created
+gh issues -o                   # only the issues in repositories you own
+gh issues -R owner/repo        # only that repository (a bare name matches any owner; repeat for several)
+gh issues -l deferred          # only the issues carrying that label (repeat to require several)
+gh issues --json               # raw JSON, with each issue's roles and why it needs you
+```
+
+The filters combine, and narrow `--attention`, `--count` and `--json` too.
+On a failure `--count` prints no number and exits 1, so an error never reads
+as zero. There is no `-a` for `--attention`: in `gh prs` it widens to
+everything.
