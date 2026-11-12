@@ -1,5 +1,6 @@
-# Builds the binaries and publishes a GitHub Release when a v* tag is pushed,
-# then asks the Homebrew tap (denrou/homebrew-tap) to rewrite its formula.
+# Builds the binaries of both tools (gh-prs and gh-issues) and publishes a
+# GitHub Release when a v* tag is pushed, then asks the Homebrew tap
+# (denrou/homebrew-tap) to rewrite the gh-prs formula, which installs both.
 # Same pipeline as denrou/slack.
 
 name: Release
@@ -28,14 +29,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check that the tag matches the crate version
+      - name: Check that the tag matches the version of both tools
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "gh-prs") | .version')"
           tag="${GITHUB_REF_NAME#v}"
-          if [ "$version" != "$tag" ]; then
-            echo "Cargo.toml version is $version but the tag is v$tag" >&2
-            exit 1
-          fi
+          for tool in gh-prs gh-issues; do
+            version="$(cargo metadata --no-deps --format-version 1 | jq -r --arg tool "$tool" '.packages[] | select(.name == $tool) | .version')"
+            if [ "$version" != "$tag" ]; then
+              echo "$tool is at version '$version' but the tag is v$tag" >&2
+              exit 1
+            fi
+          done
 
       # The notes are the tag's message past its first line, the tag name,
       # and before a signature, if any. Read here so a tag without them
@@ -98,11 +101,14 @@ jobs:
 
       - run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package the binary with the README and the licence
+      # One archive for the workspace's two tools, named after the formula
+      # that installs them both.
+      - name: Package the binaries with the README and the licence
         run: |
           name="gh-prs-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          release="target/${{ matrix.target }}/release"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/gh-prs" README.md LICENSE "dist/$name/"
+          cp "$release/gh-prs" "$release/gh-issues" README.md LICENSE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -r "dist/$name"
 
