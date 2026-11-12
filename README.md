@@ -311,11 +311,12 @@ then the whole backlog grouped by repository:
 Your own quiet backlog (issues you opened, with nobody answering) needs
 nothing, and is only listed.
 
-It is not in the Homebrew formula yet. Build it from the repository, then
-add the alias:
+It comes with `gh-prs`: the Homebrew formula installs both binaries (from
+0.20.0 on), and so does the release archive. Elsewhere, build it from the
+repository. Then add the alias:
 
 ```bash
-cargo install --locked --git https://github.com/denrou/gh-prs.git gh-issues
+cargo install --locked --git https://github.com/denrou/gh-prs.git gh-issues  # without Homebrew
 gh alias set --shell issues 'gh-issues "$@"'
 ```
 
