@@ -313,10 +313,15 @@ nothing, and is only listed.
 
 It comes with `gh-prs`: the Homebrew formula installs both binaries (from
 0.20.0 on), and so does the release archive. Elsewhere, build it from the
-repository. Then add the alias:
+repository:
 
 ```bash
-cargo install --locked --git https://github.com/denrou/gh-prs.git gh-issues  # without Homebrew
+cargo install --locked --git https://github.com/denrou/gh-prs.git gh-issues
+```
+
+Then add the alias:
+
+```bash
 gh alias set --shell issues 'gh-issues "$@"'
 ```
 
