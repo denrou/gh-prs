@@ -660,9 +660,11 @@ gathered and printed inside the frame, since a clear would wipe them.
 
 The stores and the clock are read at every refresh (a snooze made in
 another terminal shows at the next one, and PRs age into **stale** as the
-hours pass); `config.json` is read once at start. Ctrl-C leaves the
-alternate screen and exits `130`, holding the stdout lock so the loop
-cannot draw on the main screen afterwards. A frame taller than the screen
+hours pass); `config.json` is read once at start. Ctrl-C, SIGTERM and
+SIGHUP leave the alternate screen and exit `130`, holding the stdout and
+stderr locks so the loop cannot write on the main screen afterwards. The
+cursor is never hidden, so an exit no handler catches (Ctrl-Z, SIGKILL)
+leaves at most the alternate screen behind. A frame taller than the screen
 scrolls its top off; nothing truncates it yet. The loop itself has no
 conformance scenario, since it never ends: the interval, backoff and
 formatting rules are unit tests, the refusals are scenarios.

@@ -2,10 +2,9 @@
 //!
 //! The frames go to the terminal's alternate screen, as with `watch` or
 //! `top`: clearing the main screen pushes a copy of every frame into the
-//! scrollback in some terminals. Ctrl-C leaves it, so the shell gets its
-//! screen back.
+//! scrollback in some terminals. Ctrl-C (or SIGTERM, SIGHUP) leaves it, so
+//! the shell gets its screen back.
 
-use std::fmt::Write as _;
 use std::io::Write;
 use std::time::Duration;
 
@@ -19,15 +18,18 @@ pub const MIN_INTERVAL: Duration = Duration::from_secs(10);
 /// The longest wait after failures in a row, unless the interval is longer.
 const MAX_BACKOFF: Duration = Duration::from_secs(600);
 
-const ENTER: &str = "\x1b[?1049h\x1b[?25l";
-const LEAVE: &str = "\x1b[?25h\x1b[?1049l";
+// Deliberate: the cursor stays visible, so an exit no handler catches
+// (Ctrl-Z, SIGKILL) leaves at most the alternate screen behind.
+const ENTER: &str = "\x1b[?1049h";
+const LEAVE: &str = "\x1b[?1049l";
 const HOME_CLEAR_LINE: &str = "\x1b[H\x1b[2K";
 const HOME_CLEAR_SCREEN: &str = "\x1b[H\x1b[2J";
 
 /// `30s`, `2m` or `1h`, at least [`MIN_INTERVAL`] (the clap value parser
 /// of `--follow`).
 pub fn parse_interval(text: &str) -> Result<Duration, String> {
-    let text = text.trim();
+    let text = text.trim().to_lowercase();
+    let text = text.as_str();
     let invalid = || {
         format!(
             "invalid interval '{text}' (use a number of seconds, minutes or hours: e.g. 30s, 2m, 1h)"
@@ -54,20 +56,18 @@ pub fn parse_interval(text: &str) -> Result<Duration, String> {
     Ok(interval)
 }
 
-/// `1h30m`, `2m`, `45s`.
+/// In the largest unit that divides it (`90s`, `2m`, `1h`), so what is
+/// shown can be typed back to `--follow`.
 #[must_use]
 pub fn human(duration: Duration) -> String {
     let secs = duration.as_secs();
-    let mut text = String::new();
-    for (amount, unit) in [(secs / 3600, 'h'), (secs / 60 % 60, 'm'), (secs % 60, 's')] {
-        if amount > 0 {
-            let _ = write!(text, "{amount}{unit}");
-        }
+    if secs > 0 && secs % 3600 == 0 {
+        format!("{}h", secs / 3600)
+    } else if secs > 0 && secs % 60 == 0 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
     }
-    if text.is_empty() {
-        text.push_str("0s");
-    }
-    text
 }
 
 /// The wait before the next refresh: the interval, doubled after each
@@ -90,8 +90,9 @@ impl Screen {
     /// (the shell's code for an interrupt, as without `--follow`).
     pub fn enter() -> Result<Self, String> {
         ctrlc::set_handler(|| {
-            // Deliberate: the lock is held until the process exits, so the
-            // main thread cannot draw on the main screen once it is back.
+            // Deliberate: both locks are held until the process exits, so the
+            // main thread cannot write on the main screen once it is back.
+            let _err = std::io::stderr().lock();
             let mut out = std::io::stdout().lock();
             let _ = out.write_all(LEAVE.as_bytes());
             let _ = out.flush();
@@ -124,10 +125,11 @@ impl Drop for Screen {
     }
 }
 
-/// One line, cut to the screen so it never wraps onto the frame below.
+/// One line, cut to the screen so it never wraps onto the frame below. An
+/// error's text can carry gh's stderr, hence the stripping.
 fn status_line(text: &str, style: Style) -> String {
-    let first = text.lines().next().unwrap_or_default();
-    ui::paint(&truncate(first, ui::width()), style)
+    let first = ui::strip_control_characters(text.lines().next().unwrap_or_default());
+    ui::paint(&truncate(&first, ui::width()), style)
 }
 
 /// Terminal control sequences go straight to stdout: `anstream` would strip
@@ -147,6 +149,7 @@ mod tests {
         assert_eq!(parse_interval("30s"), Ok(Duration::from_secs(30)));
         assert_eq!(parse_interval("2m"), Ok(Duration::from_secs(120)));
         assert_eq!(parse_interval(" 1h "), Ok(Duration::from_secs(3600)));
+        assert_eq!(parse_interval("2M"), Ok(Duration::from_secs(120)));
         assert_eq!(parse_interval("10s"), Ok(MIN_INTERVAL));
     }
 
@@ -176,11 +179,18 @@ mod tests {
     }
 
     #[test]
-    fn durations_read_as_typed() {
-        assert_eq!(human(Duration::from_secs(45)), "45s");
-        assert_eq!(human(Duration::from_secs(60)), "1m");
-        assert_eq!(human(Duration::from_secs(90)), "1m30s");
-        assert_eq!(human(Duration::from_secs(5400)), "1h30m");
+    fn durations_show_as_they_can_be_typed() {
+        for secs in [10, 45, 60, 90, 600, 3600, 5400] {
+            let shown = human(Duration::from_secs(secs));
+            assert_eq!(
+                parse_interval(&shown),
+                Ok(Duration::from_secs(secs)),
+                "{shown}"
+            );
+        }
+        assert_eq!(human(Duration::from_secs(90)), "90s");
+        assert_eq!(human(Duration::from_secs(600)), "10m");
+        assert_eq!(human(Duration::from_secs(5400)), "90m");
         assert_eq!(human(Duration::ZERO), "0s");
     }
 

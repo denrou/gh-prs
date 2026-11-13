@@ -15,7 +15,7 @@ publish = false
 anstream = "1.0.0"
 anstyle = "1.0.14"
 clap = { version = "4.6.7", features = ["derive"] }
-ctrlc = "3.5.2"
+ctrlc = { version = "3.5.2", features = ["termination"] }
 gh-common = { path = "crates/gh-common" }
 gh-conformance = { path = "crates/gh-conformance" }
 indicatif = "0.18.6"
