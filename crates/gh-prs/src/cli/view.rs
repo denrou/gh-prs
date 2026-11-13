@@ -1,6 +1,8 @@
 //! The views: attention (the default), `-c`, `-r` and `-a`.
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anstyle::{AnsiColor, Style};
 use gh_common::duration::parse_duration;
@@ -8,10 +10,11 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
 use super::args::Cli;
-use super::{FAILURE, render, settings, ui};
+use super::follow::{Screen, human, wait};
+use super::{FAILURE, USAGE, render, settings, ui};
 use crate::attention::Staleness;
 use crate::config::week_days;
-use crate::gh::{Runner, count_prs, fetch_prs};
+use crate::gh::{GhError, Runner, count_prs, fetch_prs};
 use crate::hide::{hide_path, load_hidden, split_hidden};
 use crate::mute::split_muted;
 use crate::pr::{PullRequest, Role};
@@ -81,16 +84,28 @@ pub fn run(cli: &Cli, runner: &dyn Runner) -> ExitCode {
             }
         }
     }
-    let staleness = stale_after.map(|after| Staleness {
-        now: Timestamp::now(),
-        after,
-        skip_weekends: config.skip_weekends,
-        tz: TimeZone::system(),
-    });
+    // The clock is read at each fetch, so a long --follow ages PRs as it goes.
+    let load = |on_warning: &mut dyn FnMut(&str)| {
+        let staleness = stale_after.map(|after| Staleness {
+            now: Timestamp::now(),
+            after,
+            skip_weekends: config.skip_weekends,
+            tz: TimeZone::system(),
+        });
+        fetch_prs(runner, qualifiers, staleness.as_ref(), on_warning)
+    };
 
-    let fetched = ui::spinning("Fetching pull requests…", |warn| {
-        fetch_prs(runner, qualifiers, staleness.as_ref(), &mut |w| warn(w))
-    });
+    if let Some(interval) = cli.follow {
+        return follow(interval, load, |prs| {
+            if attention_view {
+                render::attention(&withhold(prs, &config.mute), ui::width());
+            } else {
+                render::list(&prs, title, style, ui::width());
+            }
+        });
+    }
+
+    let fetched = ui::spinning("Fetching pull requests…", |warn| load(&mut |w| warn(w)));
     let mut prs = match fetched {
         Ok(prs) => prs,
         Err(error) => {
@@ -120,6 +135,75 @@ pub fn run(cli: &Cli, runner: &dyn Runner) -> ExitCode {
         render::list(&prs, title, style, ui::width());
     }
     ExitCode::SUCCESS
+}
+
+/// Fetch and `show` the view every `interval` until Ctrl-C. A failed
+/// refresh keeps the last frame on screen under the error and waits longer
+/// before the next try. The stores are read at every refresh, so a snooze
+/// or a hide made elsewhere shows at the next one; config.json is read once.
+fn follow<L, S>(interval: Duration, load: L, show: S) -> ExitCode
+where
+    L: Fn(&mut dyn FnMut(&str)) -> Result<Vec<PullRequest>, GhError>,
+    S: Fn(Vec<PullRequest>),
+{
+    if !std::io::stdout().is_terminal() {
+        ui::error("--follow needs a terminal");
+        return ExitCode::from(USAGE);
+    }
+    let screen = match Screen::enter() {
+        Ok(screen) => screen,
+        Err(error) => {
+            ui::error(&error);
+            return ExitCode::from(FAILURE);
+        }
+    };
+    let clock = || {
+        Timestamp::now()
+            .to_zoned(TimeZone::system())
+            .strftime("%H:%M:%S")
+            .to_string()
+    };
+    let every = human(interval);
+    let mut updated: Option<String> = None;
+    let mut failures: u32 = 0;
+    screen.status("Fetching pull requests…", ui::DIM);
+    loop {
+        let mut warnings = Vec::new();
+        match load(&mut |warning| warnings.push(warning.to_owned())) {
+            Ok(prs) => {
+                failures = 0;
+                let now = clock();
+                screen.frame(
+                    &format!("Updated {now} · every {every} · Ctrl-C to quit"),
+                    ui::DIM,
+                );
+                for warning in &warnings {
+                    ui::warn(warning);
+                }
+                show(prs);
+                updated = Some(now);
+            }
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                let shown = updated
+                    .as_deref()
+                    .map_or_else(String::new, |at| format!(", showing {at}"));
+                screen.status(
+                    &format!(
+                        "✗ Refresh failed at {}{shown}, next try in {}: {error}",
+                        clock(),
+                        human(wait(interval, failures)),
+                    ),
+                    ui::fg(AnsiColor::Red),
+                );
+            }
+        }
+        std::thread::sleep(wait(interval, failures));
+        let since = updated
+            .as_deref()
+            .map_or_else(String::new, |at| format!(" · updated {at}"));
+        screen.status(&format!("Refreshing…{since}"), ui::DIM);
+    }
 }
 
 /// Apply mute rules, then hides, then snoozes, saying how many PRs each

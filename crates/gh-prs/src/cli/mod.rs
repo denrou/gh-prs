@@ -3,6 +3,7 @@
 //! Exit codes: 0 success, 1 a failure (or a partial batch), 2 a usage error.
 
 mod args;
+mod follow;
 mod hide;
 mod merge;
 mod render;
@@ -38,9 +39,16 @@ pub fn run(args: impl IntoIterator<Item = OsString>, runner: &dyn Runner) -> Exi
         return view::run(&cli, runner);
     };
     // The view flags parse fine before a subcommand but don't apply to it.
-    if cli.created || cli.review || cli.all || cli.count || cli.json || cli.stale_after.is_some() {
+    if cli.created
+        || cli.review
+        || cli.all
+        || cli.count
+        || cli.json
+        || cli.stale_after.is_some()
+        || cli.follow.is_some()
+    {
         ui::error(&format!(
-            "-c/-r/-a, --count, --json and --stale-after do not apply to 'gh prs {}'",
+            "-c/-r/-a, --count, --json, --stale-after and --follow do not apply to 'gh prs {}'",
             command.name()
         ));
         return ExitCode::from(USAGE);

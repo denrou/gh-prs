@@ -115,6 +115,8 @@ gh prs --json       # raw JSON (for scripting)
 gh prs --count      # print only the PR count for the selected view
                     # (attention count by default; handy for status bars)
 gh prs --no-color   # disable colored output
+gh prs -f/--follow  # keep the view on screen, refreshed every minute (Ctrl-C to quit)
+gh prs -r -f 30s    # …any view, at another interval (at least 10s)
 
 gh prs snooze 123           # hide a PR (of the current repo) until it changes
 gh prs snooze 123 -R o/r    # …of another repo (owner/repo)
@@ -139,6 +141,15 @@ gh prs --stale-after 5d  # flag your PRs (review-waiting or draft) quiet this lo
 `--count` exits non-zero when fetching fails, so status-bar scripts can tell
 "no PRs" apart from "the lookup broke". With `-c` or `-r` it uses a fast
 count-only query (well under a second) — ideal for frequent polling.
+
+`--follow` redraws the view in place, in the terminal's alternate screen, like
+`watch`. The interval runs from the end of one refresh to the start of the
+next. A failed refresh keeps the last table on screen under the error and
+waits twice as long before the next try, up to 10 minutes. Snoozes and hides
+made in another terminal show at the next refresh; a change to `config.json`
+needs a restart. A refresh costs a few points of the 5,000 GraphQL points an
+hour GitHub gives your account, shared with every other `gh` command, hence
+the 10s floor.
 
 ### Snoozing
 

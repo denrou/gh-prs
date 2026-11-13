@@ -45,6 +45,19 @@ pub struct Cli {
     #[arg(long = "stale-after", value_name = "DURATION")]
     pub stale_after: Option<String>,
 
+    /// keep the view on screen and refresh it at this interval until Ctrl-C
+    /// (e.g. 30s, 2m; default 1m, at least 10s)
+    #[arg(
+        short = 'f',
+        long,
+        value_name = "INTERVAL",
+        num_args = 0..=1,
+        default_missing_value = "1m",
+        value_parser = super::follow::parse_interval,
+        conflicts_with_all = ["json", "count"],
+    )]
+    pub follow: Option<std::time::Duration>,
+
     /// disable colored output
     #[arg(long = "no-color", global = true)]
     pub no_color: bool,
