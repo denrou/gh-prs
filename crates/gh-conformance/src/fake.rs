@@ -80,7 +80,6 @@ pub fn invoked_as_gh() -> bool {
         .is_some_and(|arg0| Path::new(&arg0).file_name() == Some(OsStr::new("gh")))
 }
 
-#[must_use]
 pub fn run(answer: Answer, is_write: fn(&str) -> bool) -> ExitCode {
     let scenario_path = std::env::var_os(SCENARIO_VAR).expect("fake gh run outside the harness");
     let text = std::fs::read_to_string(scenario_path).unwrap();
