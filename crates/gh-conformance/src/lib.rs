@@ -68,7 +68,6 @@ pub struct Suite {
 
 /// The test binary's `main`: the fake `gh` when invoked through its
 /// symlink, the suite otherwise.
-#[must_use]
 pub fn main(suite: Suite) -> ExitCode {
     if fake::invoked_as_gh() {
         return fake::run(suite.answer, suite.is_write);
