@@ -1,0 +1,5 @@
+error: the argument '--follow [<INTERVAL>]' cannot be used with '--json'
+
+Usage: gh prs --follow [<INTERVAL>]
+
+For more information, try '--help'.

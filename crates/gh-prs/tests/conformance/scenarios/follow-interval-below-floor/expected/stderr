@@ -1,0 +1,3 @@
+error: invalid value '5s' for '--follow [<INTERVAL>]': the interval is at least 10s: each refresh takes seconds and spends GitHub API quota
+
+For more information, try '--help'.

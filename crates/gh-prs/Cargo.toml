@@ -14,8 +14,10 @@ path = "tests/conformance/main.rs"
 harness = false
 
 [dependencies]
+anstream.workspace = true
 anstyle.workspace = true
 clap.workspace = true
+ctrlc.workspace = true
 gh-common.workspace = true
 jiff.workspace = true
 serde.workspace = true

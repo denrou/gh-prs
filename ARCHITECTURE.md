@@ -80,7 +80,8 @@ mute}` JSON at `$XDG_CONFIG_HOME/gh-prs/config.json`), kept separate from
 - **`cli/`** — Command-line interface: `args.rs` (clap definitions),
   `mod.rs` (dispatch, settings, ref resolution, `prune_closed()`), `view.rs`
   (the attention and list views; mute → hide → snooze), `render.rs` (tables
-  and `--json`), and one file
+  and `--json`), `follow.rs` (`--follow`: the interval, the backoff and the
+  alternate screen), and one file
   per subcommand family (`snooze.rs`, `hide.rs`, `merge.rs`).
 
 ## Type model
@@ -643,6 +644,30 @@ evidence on every axis and the CLI runs in two phases:
 The bare `gh prs merge` (no refs) is a usage error today; merging every
 **ready** PR from the attention view is the natural follow-up, but it needs a
 confirmation step before it can ship.
+
+## Following (`cli/follow.rs`, driven from `cli/view.rs`)
+
+`--follow [INTERVAL]` (default 1m, floor 10s) reruns the view until Ctrl-C:
+the same fetch, the same mute → hide → snooze, the same table, drawn as a
+frame in the terminal's alternate screen under a status line. It refuses
+`--json` and `--count` (scripts poll on their own) and a stdout that is not
+a terminal (exit `2`). The interval counts from the end of one fetch, so a
+slow fetch never queues the next. A failed fetch only rewrites the status
+line, so the last table stays on screen under the error, and the wait
+doubles with each failure in a row, up to 10 minutes or the interval when
+longer, so an outage or a rate limit is not hammered. Fetch warnings are
+gathered and printed inside the frame, since a clear would wipe them.
+
+The stores and the clock are read at every refresh (a snooze made in
+another terminal shows at the next one, and PRs age into **stale** as the
+hours pass); `config.json` is read once at start. Ctrl-C, SIGTERM and
+SIGHUP leave the alternate screen and exit `130`, holding the stdout and
+stderr locks so the loop cannot write on the main screen afterwards. The
+cursor is never hidden, so an exit no handler catches (Ctrl-Z, SIGKILL)
+leaves at most the alternate screen behind. A frame taller than the screen
+scrolls its top off; nothing truncates it yet. The loop itself has no
+conformance scenario, since it never ends: the interval, backoff and
+formatting rules are unit tests, the refusals are scenarios.
 
 ## Notes
 
