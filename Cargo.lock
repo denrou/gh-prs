@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "gh-common"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "gh-conformance"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "jiff",
  "libtest-mimic",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "gh-issues"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anstyle",
  "clap",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "gh-prs"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anstream",
  "anstyle",
