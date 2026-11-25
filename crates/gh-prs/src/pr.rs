@@ -304,8 +304,8 @@ pub struct PullRequest {
     /// `None` when the viewer never reviewed, only replied in a review
     /// thread, or the 50-node cap hid it.
     pub my_review: Option<MyReview>,
-    /// The latest-reviews connection came back full, so `my_review = None`
-    /// can't be trusted.
+    /// The latest-reviews connection came back full or without nodes, so
+    /// `my_review = None` can't be trusted.
     pub latest_reviews_truncated: bool,
     pub head: Option<Oid>,
     /// The viewer is personally on the requested-reviewers list, not merely

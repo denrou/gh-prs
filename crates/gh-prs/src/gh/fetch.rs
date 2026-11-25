@@ -228,21 +228,24 @@ pub fn fetch_prs(
     for pr in &mut prs {
         pr.attention = attention_reasons(pr, staleness);
         // The reviewed-by search also matches a thread reply, which
-        // latestReviews leaves out, so only a full page can have hidden my
-        // review. Drafts never flag anyway.
-        let review_known = pr
-            .my_review
-            .as_ref()
-            .is_some_and(|review| review.state != Reported::Missing);
-        if !pr.is_draft
-            && pr.roles.contains(&Role::ReviewedBy)
-            && pr.latest_reviews_truncated
-            && !review_known
-        {
-            on_warning(&format!(
-                "{}: your review is not among its first {REVIEW_PAGE_LIMIT} latest reviews; new-commit detection may miss it",
-                pr.id()
-            ));
+        // latestReviews leaves out, so only a full or unknown page can have
+        // hidden my review. Drafts never flag anyway.
+        if !pr.is_draft && pr.roles.contains(&Role::ReviewedBy) {
+            let hidden = match &pr.my_review {
+                None if pr.latest_reviews_truncated => Some(format!(
+                    "your review is not among its first {REVIEW_PAGE_LIMIT} latest reviews"
+                )),
+                Some(review) if review.state == Reported::Missing => {
+                    Some("your review came back without a state".to_owned())
+                }
+                _ => None,
+            };
+            if let Some(why) = hidden {
+                on_warning(&format!(
+                    "{}: {why}; new-commit detection may miss it",
+                    pr.id()
+                ));
+            }
         }
         // Flagging on a hidden thread would fabricate the reason on every
         // PR past the cap, so inform instead. A flagged PR shows anyway.
@@ -1023,6 +1026,44 @@ mod tests {
             );
             let gh = FakeGh::with(&[("reviewed-by", Ok(("me", vec![reply_only], 1)))]);
             assert!(fetch(&gh, &[Role::ReviewedBy]).unwrap().1.is_empty());
+        }
+
+        #[test]
+        fn reviewed_by_with_my_review_on_a_full_page_stays_quiet() {
+            let mut full = full_latest_reviews(json!({}));
+            full["latestReviews"]["nodes"][0] =
+                json!({"author": {"login": "me"}, "state": "APPROVED"});
+            let gh = FakeGh::with(&[("reviewed-by", Ok(("me", vec![full], 1)))]);
+            assert!(fetch(&gh, &[Role::ReviewedBy]).unwrap().1.is_empty());
+        }
+
+        #[test]
+        fn reviewed_by_with_unknown_latest_reviews_warns() {
+            let gh = FakeGh::with(&[(
+                "reviewed-by",
+                Ok(("me", vec![node(42, json!({"latestReviews": null}))], 1)),
+            )]);
+            assert_eq!(
+                fetch(&gh, &[Role::ReviewedBy]).unwrap().1,
+                [
+                    "acme/widgets#42: your review is not among its first 50 latest reviews; new-commit detection may miss it"
+                ]
+            );
+        }
+
+        #[test]
+        fn reviewed_by_with_stateless_review_warns_whatever_the_page() {
+            let stateless = node(
+                42,
+                json!({"latestReviews": {"nodes": [{"author": {"login": "me"}, "state": null}]}}),
+            );
+            let gh = FakeGh::with(&[("reviewed-by", Ok(("me", vec![stateless], 1)))]);
+            assert_eq!(
+                fetch(&gh, &[Role::ReviewedBy]).unwrap().1,
+                [
+                    "acme/widgets#42: your review came back without a state; new-commit detection may miss it"
+                ]
+            );
         }
 
         fn full_threads(overrides: Value) -> Value {

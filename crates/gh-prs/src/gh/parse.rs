@@ -163,7 +163,7 @@ pub(super) fn to_pull_request(
 
     // latestReviews already collapses to each reviewer's most recent review.
     // A reply in someone else's thread is a review to GitHub's search but
-    // never shows here, so only a full page says one may be hidden.
+    // never shows here, so only a full or unknown page says one may be hidden.
     let latest_reviews = nodes(raw.latest_reviews.as_ref());
     let my_review = latest_reviews
         .iter()
@@ -248,7 +248,13 @@ pub(super) fn to_pull_request(
         mergeable: reported(raw.mergeable.as_deref(), "mergeable", &mut report),
         checks: checks(raw.commits.as_ref(), &mut report),
         my_review,
-        latest_reviews_truncated: latest_reviews.len() >= REVIEW_PAGE_LIMIT,
+        // No nodes at all is no evidence the page is short: unknown reads as
+        // truncated, so the warning stays.
+        latest_reviews_truncated: raw
+            .latest_reviews
+            .as_ref()
+            .and_then(|block| block.nodes.as_ref())
+            .is_none_or(|reviews| reviews.len() >= REVIEW_PAGE_LIMIT),
         head: raw.head_ref_oid.as_deref().and_then(Oid::new),
         review_requested_explicitly: requests
             .iter()
@@ -541,6 +547,10 @@ mod tests {
             .map(|i| json!({"author": {"login": format!("reviewer{i}")}, "state": "APPROVED"}))
             .collect();
         assert!(with(json!({"latestReviews": {"nodes": reviews}})).latest_reviews_truncated);
+        // No evidence the page is short.
+        assert!(with(json!({"latestReviews": null})).latest_reviews_truncated);
+        assert!(with(json!({"latestReviews": {"nodes": null}})).latest_reviews_truncated);
+        assert!(parse(without("latestReviews")).latest_reviews_truncated);
         assert!(
             !with(json!({"latestReviews": {"nodes": [{"author": {"login": "someone-else"}, "state": "APPROVED"}]}}))
                 .latest_reviews_truncated

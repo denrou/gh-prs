@@ -6,7 +6,8 @@
     "viewer": "me",
     "searches": {
       "reviewed-by": [
-        "R_OBJECTED"
+        "R_OBJECTED",
+        "R_REPLIED"
       ]
     },
     "nodes": {
@@ -461,6 +462,24 @@
             {
               "author": {
                 "login": "reviewer49"
+              },
+              "state": "COMMENTED"
+            }
+          ]
+        }
+      },
+      "R_REPLIED": {
+        "number": 24,
+        "title": "Rename the queue",
+        "author": {
+          "login": "dave"
+        },
+        "reviewDecision": "REVIEW_REQUIRED",
+        "latestReviews": {
+          "nodes": [
+            {
+              "author": {
+                "login": "erin"
               },
               "state": "COMMENTED"
             }
