@@ -162,7 +162,10 @@ pub(super) fn to_pull_request(
     let is_viewer = |actor: Option<&Actor>| !viewer.is_empty() && login(actor) == Some(viewer);
 
     // latestReviews already collapses to each reviewer's most recent review.
-    let my_review = nodes(raw.latest_reviews.as_ref())
+    // A reply in someone else's thread is a review to GitHub's search but
+    // never shows here, so only a full page says one may be hidden.
+    let latest_reviews = nodes(raw.latest_reviews.as_ref());
+    let my_review = latest_reviews
         .iter()
         .flatten()
         .find(|review| is_viewer(review.author.as_ref()))
@@ -245,6 +248,7 @@ pub(super) fn to_pull_request(
         mergeable: reported(raw.mergeable.as_deref(), "mergeable", &mut report),
         checks: checks(raw.commits.as_ref(), &mut report),
         my_review,
+        latest_reviews_truncated: latest_reviews.len() >= REVIEW_PAGE_LIMIT,
         head: raw.head_ref_oid.as_deref().and_then(Oid::new),
         review_requested_explicitly: requests
             .iter()
@@ -526,7 +530,21 @@ mod tests {
 
     #[test]
     fn no_review_means_no_review() {
-        assert_eq!(with(json!({})).my_review, None);
+        let pr = with(json!({}));
+        assert_eq!(pr.my_review, None);
+        assert!(!pr.latest_reviews_truncated);
+    }
+
+    #[test]
+    fn full_latest_reviews_page_sets_truncated() {
+        let reviews: Vec<Value> = (0..REVIEW_PAGE_LIMIT)
+            .map(|i| json!({"author": {"login": format!("reviewer{i}")}, "state": "APPROVED"}))
+            .collect();
+        assert!(with(json!({"latestReviews": {"nodes": reviews}})).latest_reviews_truncated);
+        assert!(
+            !with(json!({"latestReviews": {"nodes": [{"author": {"login": "someone-else"}, "state": "APPROVED"}]}}))
+                .latest_reviews_truncated
+        );
     }
 
     #[test]

@@ -161,7 +161,311 @@
         "author": {
           "login": "dave"
         },
-        "reviewDecision": "CHANGES_REQUESTED"
+        "reviewDecision": "CHANGES_REQUESTED",
+        "latestReviews": {
+          "nodes": [
+            {
+              "author": {
+                "login": "reviewer0"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer1"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer2"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer3"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer4"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer5"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer6"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer7"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer8"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer9"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer10"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer11"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer12"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer13"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer14"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer15"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer16"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer17"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer18"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer19"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer20"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer21"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer22"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer23"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer24"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer25"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer26"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer27"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer28"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer29"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer30"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer31"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer32"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer33"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer34"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer35"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer36"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer37"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer38"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer39"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer40"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer41"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer42"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer43"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer44"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer45"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer46"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer47"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer48"
+              },
+              "state": "COMMENTED"
+            },
+            {
+              "author": {
+                "login": "reviewer49"
+              },
+              "state": "COMMENTED"
+            }
+          ]
+        }
       },
       "X_ELSEWHERE": {
         "number": 30,

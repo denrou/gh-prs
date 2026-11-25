@@ -279,7 +279,10 @@ A non-draft PR needs attention when any of these hold:
   disappear once fulfilled, so these PRs match no other attention qualifier.
   When the `latestReviews` 50-node cap hides your review on a `reviewed-by`
   PR, `fetch_prs` reports the contradiction through `on_warning` instead of
-  silently skipping the PR.
+  silently skipping the PR. It warns only when the page came back full: the
+  search also matches a PR where you only replied in someone else's review
+  thread, a `COMMENTED` review that `latestReviews` leaves out, and that
+  reply has no reviewed commit to compare against.
 - **ready** — you authored it, it's `APPROVED`, CI is green (or none), it's
   not conflicting, and it's not **stacked**. A stacked PR is one whose base
   branch is itself the head of another open PR: GitHub reports it `MERGEABLE`
