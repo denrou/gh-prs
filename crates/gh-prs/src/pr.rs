@@ -301,8 +301,12 @@ pub struct PullRequest {
     pub review_decision: Reported<ReviewDecision>,
     pub mergeable: Reported<Mergeable>,
     pub checks: Checks,
-    /// `None` when the viewer never reviewed (or the 50-node cap hid it).
+    /// `None` when the viewer never reviewed, only replied in a review
+    /// thread, or the 50-node cap hid it.
     pub my_review: Option<MyReview>,
+    /// The latest-reviews connection came back full or without nodes, so
+    /// `my_review = None` can't be trusted.
+    pub latest_reviews_truncated: bool,
     pub head: Option<Oid>,
     /// The viewer is personally on the requested-reviewers list, not merely
     /// through a team.
@@ -363,6 +367,7 @@ pub(crate) mod testing {
             mergeable: Reported::Missing,
             checks: Checks::NoneConfigured,
             my_review: None,
+            latest_reviews_truncated: false,
             head: None,
             review_requested_explicitly: false,
             has_pending_review_request: false,
